@@ -245,6 +245,7 @@ localparam CONF_STR = {
 	"P1O[24:21],Analog Video V-Pos,0,-1,-2,-3,-4,-5,-6,-7,8,7,6,5,4,3,2,1;",
     "-;",
     "O[7],OSD Pause,Off,On;",
+    "O[25],Autosave Hiscores,Off,On;",
     "-;",
     "DIP;",
     "-;",
@@ -270,12 +271,12 @@ wire [10:0] ps2_key;
 
 wire        ioctl_download;
 wire        ioctl_upload;
-wire        ioctl_upload_req = 0;
+wire        ioctl_upload_req;
 wire  [7:0] ioctl_index;
 wire        ioctl_wr;
 wire [24:0] ioctl_addr;
 wire  [7:0] ioctl_dout;
-wire  [7:0] ioctl_din = 0;
+wire  [7:0] ioctl_din;
 wire        ioctl_wait;
 
 wire [15:0] joystick_0, joystick_1;
@@ -357,6 +358,7 @@ wire [15:0] sdr_cpu_dout, sdr_cpu_din;
 wire [24:0] sdr_cpu_addr;
 wire sdr_cpu_req;
 wire [1:0] sdr_cpu_wr_sel;
+wire sdr_cpu_mem_rq;
 
 reg [24:0] sdr_rom_addr;
 reg [15:0] sdr_rom_data;
@@ -364,6 +366,8 @@ reg [1:0] sdr_rom_be;
 reg sdr_rom_req;
 
 wire sdr_rom_write = ioctl_download && (ioctl_index == 0);
+
+
 wire [24:0] sdr_ch3_addr = sdr_rom_write ? sdr_rom_addr : sdr_cpu_addr;
 wire [15:0] sdr_ch3_din = sdr_rom_write ? sdr_rom_data : sdr_cpu_din;
 wire [1:0] sdr_ch3_be = sdr_rom_write ? sdr_rom_be : sdr_cpu_wr_sel;
@@ -372,6 +376,7 @@ wire sdr_ch3_req = sdr_rom_write ? sdr_rom_req : sdr_cpu_req;
 wire sdr_ch3_rdy;
 wire sdr_cpu_rdy = sdr_ch3_rdy;
 wire sdr_rom_rdy = sdr_ch3_rdy;
+
 
 wire [19:0] bram_addr;
 wire [7:0] bram_data;
@@ -558,6 +563,13 @@ m72 m72(
     .sdr_cpu_req(sdr_cpu_req),
     .sdr_cpu_rdy(sdr_cpu_rdy),
     .sdr_cpu_wr_sel(sdr_cpu_wr_sel),
+    .sdr_cpu_mem_rq(sdr_cpu_mem_rq),
+    .hs_address(hs_address),
+    .hs_data_out(hs_data_out),
+    .hs_data_in(hs_data_in),
+    .hs_read_enable(hs_read_enable),
+    .hs_write_enable(hs_write_enable),
+    .hs_data_ready(hs_data_ready),
 
     .clk_bram(clk_sys),
     .bram_addr(bram_addr),
@@ -624,6 +636,7 @@ gamma_fast video_gamma
     .RGB_out({gamma_r, gamma_g, gamma_b})
 );
 
+
 wire VGA_DE_MIXER;
 video_mixer #(386, 0, 0) video_mixer(
     .CLK_VIDEO(CLK_VIDEO),
@@ -678,7 +691,7 @@ pause pause(
     .clk_sys(clk_sys),
     .reset(reset),
     .user_button(m_pause),
-    .pause_request(0),
+    .pause_request(hs_pause),
     .options({1'b0, pause_in_osd}),
     .pause_cpu(system_pause),
     .OSD_STATUS(OSD_STATUS)
@@ -703,4 +716,40 @@ ddr_debug ddr_debug(
 );
 `endif
 
+//HISCORE
+
+wire [16:0]	hs_address;
+wire [7:0] 	hs_data_in;
+wire [7:0]	hs_data_out;
+wire hs_write_enable;
+wire hs_read_enable;
+wire hs_access_read;
+wire hs_access_write;
+wire hs_pause;
+wire hs_configured;
+reg hs_data_ready;
+
+
+hiscore #(
+		.HS_ADDRESSWIDTH(17)
+) hi (
+	.*,
+	.clk(clk_sys),
+	.paused(system_pause),
+	.autosave(status[25]),
+	.ram_address(hs_address),
+	.data_ready(hs_data_ready),
+	.data_from_ram(hs_data_out),
+	.data_to_ram(hs_data_in),
+	.data_from_hps(ioctl_dout),
+	.data_to_hps(ioctl_din),
+	.ram_write(hs_write_enable),
+  .ram_read(hs_read_enable),
+	.ram_intent_read(hs_access_read),
+	.ram_intent_write(hs_access_write),
+	.pause_cpu(hs_pause),
+	.configured(hs_configured)
+);
 endmodule
+
+

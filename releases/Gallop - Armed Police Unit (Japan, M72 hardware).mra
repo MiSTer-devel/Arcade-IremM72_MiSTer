@@ -106,4 +106,12 @@
             00 01 ce e0
         </part>
     </rom>
+    <rom index="3" md5="none">
+            <part>
+            0F 00 00 00 0F FF 00 01 00 0F 00 01 00 01 F0 00
+            00 0a 3d 00 6e 10 41 00
+            00 0a 3e 14 03 10 06 00
+            </part>
+    </rom>
+    <nvram index="4" size="113"></nvram>
 </misterromdescription>

@@ -68,8 +68,17 @@ module m72 (
     input [15:0] sdr_cpu_dout,
     output [15:0] sdr_cpu_din,
     output sdr_cpu_req,
+    output sdr_cpu_mem_rq,
     input sdr_cpu_rdy,
     output [1:0] sdr_cpu_wr_sel,
+
+    input [16:0] hs_address,
+    output [7:0] hs_data_out,
+    output hs_data_ready,
+    input [7:0] hs_data_in,
+    input hs_read_enable,
+    input hs_write_enable,
+    
 
     input clk_bram,
     input bram_wr,
@@ -162,9 +171,13 @@ wire [15:0] cpu_mem_out;
 wire [19:0] cpu_mem_addr;
 wire [1:0] cpu_mem_sel;
 reg cpu_mem_read_lat, cpu_mem_write_lat;
+reg hs_mem_read_lat, hs_mem_write_lat;
 wire cpu_mem_read_w, cpu_mem_write_w;
 wire cpu_mem_read = cpu_mem_read_w | cpu_mem_read_lat;
 wire cpu_mem_write = cpu_mem_write_w | cpu_mem_write_lat;
+wire hs_mem_read = hs_read_enable | hs_mem_read_lat;
+wire hs_mem_write = hs_write_enable | hs_mem_write_lat;
+
 
 wire cpu_io_read, cpu_io_write;
 wire [7:0] cpu_io_in;
@@ -195,6 +208,8 @@ function [15:0] word_shuffle(input [19:0] addr, input [15:0] data);
 endfunction
 
 reg mem_rq_active = 0;
+assign sdr_cpu_mem_rq = mem_rq_active;
+
 reg b_d_dout_valid_lat, obj_pal_dout_valid_lat, sound_dout_valid_lat, sprite_dout_valid_lat;
 
 always @(posedge CLK_32M or negedge reset_n)
@@ -207,6 +222,8 @@ begin
     end else begin
         cpu_mem_read_lat <= cpu_mem_read_w;
         cpu_mem_write_lat <= cpu_mem_write_w;
+        hs_mem_read_lat <= hs_read_enable;
+        hs_mem_write_lat <= hs_write_enable;
 
         b_d_dout_valid_lat <= b_d_dout_valid;
         obj_pal_dout_valid_lat <= obj_pal_dout_valid;
@@ -216,7 +233,9 @@ begin
 end
 
 reg sdr_cpu_rq, sdr_cpu_ack, sdr_cpu_rq2;
+reg sdr_hs_req_active;
 
+reg [16:0] hs_address2;
 always_ff @(posedge CLK_96M) begin
     sdr_cpu_req <= 0;
     if (sdr_cpu_rdy) sdr_cpu_ack <= sdr_cpu_rq;
@@ -231,6 +250,7 @@ always_ff @(posedge CLK_32M or negedge reset_n) begin
     if (!reset_n) begin
         mem_rq_active <= 0;
     end else begin
+        hs_data_ready <= 0;
         if (!mem_rq_active) begin
             if (ls245_en && ((cpu_mem_read_w & ~cpu_mem_read_lat) || (cpu_mem_write_w & ~cpu_mem_write_lat))) begin // sdram request
                 sdr_cpu_wr_sel <= 2'b00;
@@ -241,10 +261,29 @@ always_ff @(posedge CLK_32M or negedge reset_n) begin
                 end
                 sdr_cpu_rq <= ~sdr_cpu_rq;
                 mem_rq_active <= 1;
-            end
+              end else if ((hs_read_enable & ~hs_mem_read_lat) || (hs_write_enable & ~hs_mem_write_lat)) begin
+                sdr_cpu_wr_sel <= 2'b00;
+                sdr_cpu_addr <= REGION_CPU_RAM.base_addr[24:0] | hs_address[16:0];
+                if (hs_mem_write) begin
+                  sdr_cpu_wr_sel <= {hs_address[0], ~hs_address[0]};
+                  sdr_cpu_din <= {hs_data_in, hs_data_in};
+                end
+                sdr_cpu_rq <= ~sdr_cpu_rq;
+                hs_address2 <= hs_address;
+                mem_rq_active <= 1;
+                sdr_hs_req_active <= 1; 
+              end
         end else if (sdr_cpu_rq == sdr_cpu_ack) begin
-            cpu_ram_rom_data <= sdr_cpu_dout;
-            mem_rq_active <= 0;
+            if (sdr_hs_req_active) begin
+              hs_data_out <= hs_address[0] ? sdr_cpu_dout[15:8] : sdr_cpu_dout[7:0];
+              mem_rq_active <= 0;
+              sdr_hs_req_active <= 0;
+              hs_data_ready <= 1; 
+            end else begin
+              cpu_ram_rom_data <= sdr_cpu_dout;
+              mem_rq_active <= 0;
+            end
+
         end
     end
 end

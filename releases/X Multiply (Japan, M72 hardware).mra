@@ -81,4 +81,11 @@
         <part>05 02 00 00</part>
         <part name="t52.v0.ic44" crc="2db1bd80"/>
     </rom>
+    <rom index="3" md5="none">
+            <part>
+            0F 00 00 00 0F FF 00 01 00 0F 00 01 00 01 F0 00
+            00 08 09 98 49 00 00 00
+            </part>
+    </rom>
+    <nvram index="4" size="73"></nvram>
 </misterromdescription>

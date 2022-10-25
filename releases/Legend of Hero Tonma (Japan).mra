@@ -73,4 +73,12 @@
         <part>05 01 00 00</part>
         <part name="082" crc="3ed51d1f"/>
     </rom>
+    <rom index="3" md5="none">
+            <part>
+            0F 00 00 00 0F FF 00 01 00 0F 00 01 00 01 F0 00
+            00 0a 3a f4 32 36 20 00
+            00 0a 3a dc 02 36 11 00
+            </part>
+    </rom>
+    <nvram index="4" size="52"></nvram>
 </misterromdescription>
