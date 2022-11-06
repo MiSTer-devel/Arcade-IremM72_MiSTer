@@ -67,4 +67,11 @@
         <part name ="ic17.4f" crc="73ffecb4" />
 
     </rom>
-</misterromdescription>
+    <rom index="3" md5="none">
+            <part>
+            0F 00 00 00 0F 0F 00 01 00 0F 00 01 00 01 F0 00
+            00 0e 38 34 82 00 41 00
+            </part>
+    </rom>
+    <nvram index="4" size="130"></nvram>
+  </misterromdescription>

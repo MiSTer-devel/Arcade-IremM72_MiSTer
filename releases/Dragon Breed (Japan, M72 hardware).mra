@@ -77,4 +77,12 @@
         <part>05 02 00 00</part>
         <part name="db_c-v0.ic44" crc="312f7282"/>
     </rom>
+    <rom index="3" md5="none">
+            <part>
+            0F 00 00 00 0F FF 00 01 00 0F 00 01 00 01 F0 00
+            00 09 09 6a 03 58 00 00
+            00 09 09 90 82 58 2e 00
+            </part>
+    </rom>
+    <nvram index="4" size="133"></nvram>
 </misterromdescription>

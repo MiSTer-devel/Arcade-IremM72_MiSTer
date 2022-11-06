@@ -76,4 +76,11 @@
             <part name="rt_b-b3.3f" crc="ad89b072" map="1000" />
         </interleave>
     </rom>
+    <rom index="3" md5="none">
+            <part>
+            0F 00 00 00 0F 0F 00 01 00 0F 00 01 00 01 FF 00
+            00 04 2f 4a 71 45 20 00
+            </part>
+    </rom>
+    <nvram index="4" size="113"></nvram>
 </misterromdescription>
