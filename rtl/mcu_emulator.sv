@@ -55,7 +55,7 @@ module mcu_emulator(
 assign active = sample_offsets_count != 0;
 
 reg [5:0] sample_offsets_count = 0;
-reg [17:0] sample_offsets[64];
+reg [23:0] sample_offsets[64];
 reg sample_playing = 0;
 reg [9:0] sample_counter = 0;
 
@@ -182,7 +182,7 @@ always @(posedge CLK_32M or posedge reset) begin
                 end else begin
                     ext_ram_cs <= 1;
                     ext_ram_we <= 1;
-                    ext_ram_addr <= ptr - 16'h18;
+                    ext_ram_addr <= ptr[11:0] - 12'h18;
                     ext_ram_dout <= protection_data[ptr];
                     ptr <= ptr + 16'd1;
                 end
@@ -203,7 +203,7 @@ always @(posedge CLK_32M or posedge reset) begin
                 end else begin
                     ext_ram_cs <= 1;
                     ext_ram_we <= 1;
-                    ext_ram_addr <= 16'h7e0 + ptr;
+                    ext_ram_addr <= 12'h7e0 + ptr[11:0];
                     ext_ram_dout <= protection_data[ptr];
                     ptr <= ptr + 16'd1;
                 end
