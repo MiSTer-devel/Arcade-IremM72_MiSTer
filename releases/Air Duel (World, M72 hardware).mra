@@ -1,6 +1,6 @@
 <misterromdescription>
     <name>Air Duel (World, M72 hardware)</name>
-    <mameversion>0245</mameversion>
+    <mameversion>0248</mameversion>
     <setname>airduelm72</setname>
     <parent>airduel</parent>
     <year>1990</year>
