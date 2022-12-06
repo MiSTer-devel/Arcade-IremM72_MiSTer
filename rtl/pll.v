@@ -6,19 +6,23 @@
 
 `timescale 1 ps / 1 ps
 module pll (
-		input  wire  refclk,   //  refclk.clk
-		input  wire  rst,      //   reset.reset
-		output wire  outclk_0, // outclk0.clk
-		output wire  outclk_1, // outclk1.clk
-		output wire  locked    //  locked.export
+		input  wire        refclk,            //            refclk.clk
+		input  wire        rst,               //             reset.reset
+		output wire        outclk_0,          //           outclk0.clk
+		output wire        outclk_1,          //           outclk1.clk
+		output wire        locked,            //            locked.export
+		input  wire [63:0] reconfig_to_pll,   //   reconfig_to_pll.reconfig_to_pll
+		output wire [63:0] reconfig_from_pll  // reconfig_from_pll.reconfig_from_pll
 	);
 
 	pll_0002 pll_inst (
-		.refclk   (refclk),   //  refclk.clk
-		.rst      (rst),      //   reset.reset
-		.outclk_0 (outclk_0), // outclk0.clk
-		.outclk_1 (outclk_1), // outclk1.clk
-		.locked   (locked)    //  locked.export
+		.refclk            (refclk),            //            refclk.clk
+		.rst               (rst),               //             reset.reset
+		.outclk_0          (outclk_0),          //           outclk0.clk
+		.outclk_1          (outclk_1),          //           outclk1.clk
+		.locked            (locked),            //            locked.export
+		.reconfig_to_pll   (reconfig_to_pll),   //   reconfig_to_pll.reconfig_to_pll
+		.reconfig_from_pll (reconfig_from_pll)  // reconfig_from_pll.reconfig_from_pll
 	);
 
 endmodule
@@ -70,7 +74,7 @@ endmodule
 // Retrieval info: 	<generic name="gui_cascade_counter0" value="false" />
 // Retrieval info: 	<generic name="gui_output_clock_frequency0" value="96.0" />
 // Retrieval info: 	<generic name="gui_divide_factor_c0" value="1" />
-// Retrieval info: 	<generic name="gui_actual_output_clock_frequency0" value="0 MHz" />
+// Retrieval info: 	<generic name="gui_actual_output_clock_frequency0" value="99.583333 MHz" />
 // Retrieval info: 	<generic name="gui_ps_units0" value="ps" />
 // Retrieval info: 	<generic name="gui_phase_shift0" value="0" />
 // Retrieval info: 	<generic name="gui_phase_shift_deg0" value="0.0" />
@@ -79,7 +83,7 @@ endmodule
 // Retrieval info: 	<generic name="gui_cascade_counter1" value="false" />
 // Retrieval info: 	<generic name="gui_output_clock_frequency1" value="32.0" />
 // Retrieval info: 	<generic name="gui_divide_factor_c1" value="1" />
-// Retrieval info: 	<generic name="gui_actual_output_clock_frequency1" value="0 MHz" />
+// Retrieval info: 	<generic name="gui_actual_output_clock_frequency1" value="33.150183 MHz" />
 // Retrieval info: 	<generic name="gui_ps_units1" value="ps" />
 // Retrieval info: 	<generic name="gui_phase_shift1" value="0" />
 // Retrieval info: 	<generic name="gui_phase_shift_deg1" value="-60.0" />
@@ -231,11 +235,11 @@ endmodule
 // Retrieval info: 	<generic name="gui_duty_cycle17" value="50" />
 // Retrieval info: 	<generic name="gui_pll_auto_reset" value="On" />
 // Retrieval info: 	<generic name="gui_pll_bandwidth_preset" value="Auto" />
-// Retrieval info: 	<generic name="gui_en_reconf" value="false" />
+// Retrieval info: 	<generic name="gui_en_reconf" value="true" />
 // Retrieval info: 	<generic name="gui_en_dps_ports" value="false" />
 // Retrieval info: 	<generic name="gui_en_phout_ports" value="false" />
 // Retrieval info: 	<generic name="gui_phout_division" value="1" />
-// Retrieval info: 	<generic name="gui_mif_generate" value="false" />
+// Retrieval info: 	<generic name="gui_mif_generate" value="true" />
 // Retrieval info: 	<generic name="gui_enable_mif_dps" value="false" />
 // Retrieval info: 	<generic name="gui_dps_cntr" value="C0" />
 // Retrieval info: 	<generic name="gui_dps_num" value="1" />

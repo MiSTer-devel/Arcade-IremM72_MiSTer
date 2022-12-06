@@ -56,4 +56,12 @@ package m72_pkg;
         bit main_mculatch;
         bit [2:0] memory_map;
     } board_cfg_t;
+
+    typedef enum bit[1:0] {
+        VIDEO_55HZ = 2'd0,
+        VIDEO_50HZ = 2'd1,
+        VIDEO_57HZ = 2'd2,
+        VIDEO_60HZ = 2'd3
+    } video_timing_t;
+
 endpackage

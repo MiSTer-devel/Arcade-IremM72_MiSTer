@@ -212,9 +212,8 @@ wire en_sprite_palette = ~status[68];
 wire dbg_sprite_freeze = status[69];
 wire en_audio_filters = ~status[70];
 
-wire video_60hz = status[9:8] == 2'd3;
-wire video_57hz = status[9:8] == 2'd2;
-wire video_50hz = status[9:8] == 2'd1;
+video_timing_t video_timing;
+assign video_timing = video_timing_t'(status[9:8]);
 
 // If video timing changes, force mode update
 reg [1:0] video_status;
@@ -337,10 +336,114 @@ pll pll
     .rst(0),
     .outclk_0(CLK_96M),
     .outclk_1(CLK_32M),
-    .locked(pll_locked)
+	.locked(pll_locked),
+	.reconfig_to_pll(reconfig_to_pll),
+	.reconfig_from_pll(reconfig_from_pll)
 );
 
-wire reset = RESET | status[0] | buttons[1];
+wire [63:0] reconfig_to_pll;
+wire [63:0] reconfig_from_pll;
+wire        cfg_waitrequest;
+reg         cfg_write;
+reg   [5:0] cfg_address;
+reg  [31:0] cfg_data;
+
+pll_cfg pll_cfg
+(
+	.mgmt_clk(CLK_50M),
+	.mgmt_reset(0),
+	.mgmt_waitrequest(cfg_waitrequest),
+	.mgmt_read(0),
+	.mgmt_readdata(),
+	.mgmt_write(cfg_write),
+	.mgmt_address(cfg_address),
+	.mgmt_writedata(cfg_data),
+	.reconfig_to_pll(reconfig_to_pll),
+	.reconfig_from_pll(reconfig_from_pll)
+);
+
+
+localparam PLL_PARAM_COUNT = 7;
+
+wire [31:0] PLL_55HZ[PLL_PARAM_COUNT * 2] = '{
+    'h0, 'h0, // set waitrequest mode
+    'h4, 'h1818, // M COUNTER
+    'h3, 'h20302, // N COUNTER
+    'h5, 'h20302, // C0 COUNTER
+    'h5, 'h60807, // C1 COUNTER
+    'h8, 'h4, // BANDWIDTH SETTING
+    'h2, 'h0 // start reconfigure
+};
+
+wire [31:0] PLL_57HZ[PLL_PARAM_COUNT * 2] = '{
+    'h0, 'h0, // set waitrequest mode
+    'h4, 'h25b5a, // M COUNTER
+    'h3, 'h20403, // N COUNTER
+    'h5, 'h20706, // C0 COUNTER
+    'h5, 'h61413, // C1 COUNTER
+    'h8, 'h3, // BANDWIDTH SETTING
+    'h2, 'h0 // start reconfigure
+};
+
+wire [31:0] PLL_60HZ[PLL_PARAM_COUNT * 2] = '{
+    'h0, 'h0, // set waitrequest mode
+    'h4, 'h27e7d, // M COUNTER
+    'h3, 'h505, // N COUNTER
+    'h5, 'h606, // C0 COUNTER
+    'h5, 'h41212, // C1 COUNTER
+    'h8, 'h2, // BANDWIDTH SETTING
+    'h2, 'h0 // start reconfigure
+};
+
+video_timing_t video_timing_lat = VIDEO_55HZ;
+reg reconfig_pause = 0;
+
+always @(posedge CLK_50M) begin
+	reg [3:0] param_idx = 0;
+    reg [7:0] reconfig = 0;
+
+	cfg_write <= 0;
+
+	if (pll_locked & ~cfg_waitrequest) begin
+        pll_init_locked <= 1;
+		if (&reconfig) begin // do reconfig
+            case(video_timing_lat)
+            VIDEO_50HZ: begin
+                cfg_address <= PLL_55HZ[param_idx * 2 + 0][5:0];
+                cfg_data    <= PLL_55HZ[param_idx * 2 + 1];
+            end
+            VIDEO_55HZ: begin
+                cfg_address <= PLL_55HZ[param_idx * 2 + 0][5:0];
+                cfg_data    <= PLL_55HZ[param_idx * 2 + 1];
+            end
+            VIDEO_57HZ: begin
+                cfg_address <= PLL_57HZ[param_idx * 2 + 0][5:0];
+                cfg_data    <= PLL_57HZ[param_idx * 2 + 1];
+            end
+            VIDEO_60HZ: begin
+                cfg_address <= PLL_60HZ[param_idx * 2 + 0][5:0];
+                cfg_data    <= PLL_60HZ[param_idx * 2 + 1];
+            end
+            endcase
+
+            cfg_write <= 1;
+            param_idx <= param_idx + 4'd1;
+            if (param_idx == PLL_PARAM_COUNT - 1) reconfig <= 8'd0;
+
+        end else if (video_timing != video_timing_lat) begin // new timing requested
+            video_timing_lat <= video_timing;
+            reconfig <= 8'd1;
+            reconfig_pause <= 1;
+            param_idx <= 0;
+        end else if (|reconfig) begin // pausing before reconfigure
+            reconfig <= reconfig + 8'd1;
+        end else begin
+            reconfig_pause <= 0; // unpause once pll is locked again
+        end
+    end
+end
+
+wire reset = RESET | status[0] | buttons[1] | ~pll_init_locked;
 
 ///////////////////////////////////////////////////////////////////////
 // SDRAM
@@ -380,11 +483,13 @@ wire bram_wr;
 
 board_cfg_t board_cfg;
 
+reg pll_init_locked = 0;
+
 sdram sdram
 (
     .*,
-    .doRefresh(0),
-    .init(~pll_locked),
+    .doRefresh(1),
+    .init(~pll_init_locked),
     .clk(CLK_96M),
 
     .ch1_addr(sdr_bg_addr[24:1]),
@@ -566,9 +671,9 @@ m72 m72(
     .bram_wr(bram_wr),
 
 `ifdef M72_DEBUG
-    .pause_rq(system_pause | debug_stall),
+    .pause_rq(system_pause | debug_stall | reconfig_pause),
 `else
-    .pause_rq(system_pause),
+    .pause_rq(system_pause | reconfig_pause),
 `endif
     .ddr_debug_data(ddr_debug_data),
     
@@ -581,9 +686,7 @@ m72 m72(
 
     .sprite_freeze(dbg_sprite_freeze),
 
-    .video_50hz(video_50hz),
-    .video_57hz(video_57hz),
-    .video_60hz(video_60hz)
+    .video_timing(video_timing)
 );
 
 // H/V offset
@@ -698,7 +801,7 @@ ddr_debug ddr_debug(
     .*,
     .data(ddr_debug_data),
     .clk(CLK_96M),
-    .reset(reset | ~pll_locked),
+    .reset(reset),
     .stall(debug_stall)
 );
 `endif

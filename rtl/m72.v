@@ -86,9 +86,7 @@ module m72 (
 
     input sprite_freeze,
 
-    input video_60hz,
-    input video_57hz,
-    input video_50hz,
+    input video_timing_t video_timing,
 
     output ddr_debug_data_t ddr_debug_data
 );
@@ -140,8 +138,8 @@ wire ce_pix_half;
 jtframe_frac_cen #(2) pixel_cen
 (
     .clk(CLK_32M),
-    .n(video_57hz ? 10'd115 : video_60hz ? 10'd207 : 10'd1),
-    .m(video_57hz ? 10'd444 : video_60hz ? 10'd760 : 10'd4),
+    .n(10'd1),
+    .m(10'd4),
     .cen({ce_pix_half, ce_pix})
 );
 
@@ -434,7 +432,7 @@ kna70h015 kna70h015(
     .HS(HS),
     .VS(VS),
 
-    .video_50hz(video_50hz)
+    .video_50hz(video_timing == VIDEO_50HZ)
 );
 
 wire [15:0] b_d_dout;
