@@ -84,4 +84,12 @@
         <part>05 01 00 00</part>
         <part name="mh_c-v0-b.ic44" crc="d0c27e58"/>
     </rom>
+    <rom index="3" md5="none">
+            <part>
+            0F 00 00 00 0F FF 00 01 00 0F 00 01 00 01 F0 00
+            00 0a 37 c0 78 63 60 00
+            00 0a 37 ba 03 63 01 00
+            </part>
+    </rom>
+    <nvram index="4" size="123"></nvram>
 </misterromdescription>
