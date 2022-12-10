@@ -5,6 +5,7 @@
     <parent>hharry</parent>
     <year>1990</year>
     <manufacturer>Irem</manufacturer>
+    <rotation>horizontal</rotation>
     <category></category>
     <rbf>IremM72</rbf>
 
