@@ -6,6 +6,7 @@
     <year>1989</year>
     <manufacturer>Irem</manufacturer>
     <category></category>
+    <rotation>horizontal</rotation>
     <rbf>IremM72</rbf>
 
     <joystick>8-way</joystick>
