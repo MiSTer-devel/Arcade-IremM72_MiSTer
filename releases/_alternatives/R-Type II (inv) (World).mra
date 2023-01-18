@@ -1,7 +1,7 @@
 <misterromdescription>
     <name>R-Type II (Inv) (World)</name>
     <mameversion>0245</mameversion>
-    <setname>rtype2</setname>
+    <setname>rtype2inv</setname>
     <version>Invincibility</version>
     <year>1989</year>
     <manufacturer>Irem</manufacturer>

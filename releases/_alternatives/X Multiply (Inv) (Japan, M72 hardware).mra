@@ -1,7 +1,7 @@
 <misterromdescription>
     <name>X Multiply (Inv) (Japan, M72 hardware)</name>
     <mameversion>0245</mameversion>
-    <setname>xmultiplm72</setname>
+    <setname>xmultiplm72inv</setname>
     <version>Invincibility</version>
     <parent>xmultipl</parent>
     <year>1989</year>
