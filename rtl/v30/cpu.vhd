@@ -549,6 +549,7 @@ begin
       variable jumpAddr          : unsigned(15 downto 0);
       variable bcdResultLow      : unsigned(4 downto 0);
       variable bcdResultHigh     : unsigned(4 downto 0);
+      variable wordAligned       : std_logic;
    begin
       if rising_edge(clk) then
          
@@ -2606,6 +2607,12 @@ begin
                            end if;
                         
                         when OP_STRINGLOAD =>
+									if (opsize = 2) then
+										wordAligned := (not regs.reg_si(0));
+									else
+										wordAligned := '0';
+									end if;
+
                            if (repeat = '1' and regs.reg_cx = 0) then
                               repeat          <= '0';
                               endRepeat       := '1';
@@ -2641,13 +2648,15 @@ begin
                                  when 2 => 
                                     opstep <= 0;
                                     memFirst <= '0';
-                                    if (opsize = 1 or memFirst = '1') then 
+                                    if (wordAligned = '1') then
+                                       stringLoad(15 downto 0) <= unsigned(bus_dataread(15 downto 0));
+                                    elsif (opsize = 1 or memFirst = '1') then 
                                        stringLoad(7 downto 0) <= unsigned(bus_dataread(7 downto 0));
                                        if (opsize = 1) then stringLoad(15 downto 8) <= x"00"; end if;
                                     else
                                        stringLoad(15 downto 8) <= unsigned(bus_dataread(7 downto 0));
                                     end if;
-                                    if (opsize = 1 or memFirst = '0') then
+                                    if (opsize = 1 or memFirst = '0' or wordAligned = '1') then
                                        if (regs.FlagDir) then 
                                           regs.reg_si <= regs.reg_si - opsize;
                                        else                                 
@@ -2679,6 +2688,12 @@ begin
                            end if;
                            
                         when OP_STRINGCOMPARE =>
+									if (opsize = 2) then
+										wordAligned := (not regs.reg_di(0));
+									else
+										wordAligned := '0';
+									end if;
+									
                            if (repeat = '1' and regs.reg_cx = 0) then
                               repeat          <= '0';
                               endRepeat       := '1';
@@ -2706,13 +2721,15 @@ begin
                                  
                                  when 2 => 
                                     memFirst <= '0';
-                                    if (opsize = 1 or memFirst = '1') then 
+                                    if (wordAligned = '1') then
+                                       stringLoad2(15 downto 0) <= unsigned(bus_dataread(15 downto 0));
+                                    elsif (opsize = 1 or memFirst = '1') then 
                                        stringLoad2(7 downto 0) <= unsigned(bus_dataread(7 downto 0));
                                        if (opsize = 1) then stringLoad2(15 downto 8) <= x"00"; end if;
                                     else
                                        stringLoad2(15 downto 8) <= unsigned(bus_dataread(7 downto 0));
                                     end if;
-                                    if (opsize = 1 or memFirst = '0') then
+                                    if (opsize = 1 or memFirst = '0' or wordAligned = '1') then
                                        opstep <= 3;
                                        aluop  <= ALU_OP_CMP;
                                     else
@@ -2746,6 +2763,12 @@ begin
                            end if;
                            
                         when OP_STRINGSTORE =>
+									if (opsize = 2) then
+										wordAligned := (not regs.reg_di(0));
+									else
+										wordAligned := '0';
+									end if;
+									
                            if (repeat = '1' and regs.reg_cx = 0) then
                               repeat          <= '0';
                               endRepeat       := '1';
@@ -2763,7 +2786,11 @@ begin
                                  bus_read          <= '0';
                                  bus_write         <= '1';
                                  bus_be            <= "01";
-                                 if (memFirst = '0') then
+                                 if (wordAligned = '1') then
+                                    bus_datawrite    <= std_logic_vector(resultval(15 downto 0));
+                                    bus_addr         <= resize(regs.reg_es * 16 + regs.reg_di, 20);
+                                    bus_be           <= "11";
+                                 elsif (memFirst = '0') then
                                     bus_datawrite    <= x"00" & std_logic_vector(resultval(15 downto 8));
                                     bus_addr         <= resize(regs.reg_es * 16 + regs.reg_di + 1, 20);
                                  else
@@ -2771,7 +2798,7 @@ begin
                                     bus_addr         <= resize(regs.reg_es * 16 + regs.reg_di, 20);
                                  end if;
                                  
-                                 if (opsize = 1 or memFirst = '0') then 
+                                 if (opsize = 1 or memFirst = '0' or wordAligned = '1') then 
                                     exeDone   := '1';
                                     if (regs.FlagDir) then 
                                        regs.reg_di <= regs.reg_di - opsize;

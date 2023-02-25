@@ -31,7 +31,6 @@ module sprite (
     output DOUT_VALID,
     
     input [19:0] A,
-    input [1:0] BYTE_SEL,
 
     input BUFDBEN,
     input MRD,
@@ -62,7 +61,7 @@ dpramv #(.widthad_a(9)) ram_h
     .clock_a(CLK_32M),
     .address_a(A[9:1]),
     .q_a(dout_h),
-    .wren_a(MWR & BUFDBEN & BYTE_SEL[1]),
+    .wren_a(MWR & BUFDBEN),
     .data_a(DIN[15:8]),
 
     .clock_b(CLK_32M),
@@ -77,7 +76,7 @@ dpramv #(.widthad_a(9)) ram_l
     .clock_a(CLK_32M),
     .address_a(A[9:1]),
     .q_a(dout_l),
-    .wren_a(MWR & BUFDBEN & BYTE_SEL[0]),
+    .wren_a(MWR & BUFDBEN),
     .data_a(DIN[7:0]),
 
     .clock_b(CLK_32M),

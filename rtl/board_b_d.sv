@@ -29,7 +29,6 @@ module board_b_d (
 
     input [15:0] DIN,
     input [19:0] A,
-    input [1:0]  BYTE_SEL,
 
     input [7:0] IO_A,
     input [7:0] IO_DIN,
@@ -122,7 +121,6 @@ board_b_d_layer layer_a(
     .DOUT(DOUT_A),
     .DIN(DIN),
     .A(A),
-    .BYTE_SEL(BYTE_SEL),
     .RD(RDA),
     .WR(WRA),
 
@@ -160,7 +158,6 @@ board_b_d_layer layer_b(
     .DOUT(DOUT_B),
     .DIN(DIN),
     .A(A),
-    .BYTE_SEL(BYTE_SEL),
     .RD(RDB),
     .WR(WRB),
 
@@ -213,7 +210,7 @@ kna91h014 kna91h014(
     .E1_N(), // TODO
     .E2_N(), // TODO
     
-    .MWR(MWR & BYTE_SEL[0]),
+    .MWR(MWR),
     .MRD(MRD),
 
     .DIN(DIN),

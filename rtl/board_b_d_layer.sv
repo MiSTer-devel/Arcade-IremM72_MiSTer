@@ -25,7 +25,6 @@ module board_b_d_layer(
     input [15:0] DIN,
     output [15:0] DOUT,
     input [19:0] A,
-    input [1:0]  BYTE_SEL,
     input RD,
     input WR,
 
@@ -64,7 +63,7 @@ dpramv #(.widthad_a(12)) ram_00
     .clock_a(CLK_32M),
     .address_a(A[13:2]),
     .q_a(dout_00),
-    .wren_a(WR & ~A[1] & BYTE_SEL[0]),
+    .wren_a(WR & ~A[1]),
     .data_a(DIN[7:0]),
 
     .clock_b(CLK_32M),
@@ -79,7 +78,7 @@ dpramv #(.widthad_a(12)) ram_01
     .clock_a(CLK_32M),
     .address_a(A[13:2]),
     .q_a(dout_01),
-    .wren_a(WR & ~A[1] & BYTE_SEL[1]),
+    .wren_a(WR & ~A[1]),
     .data_a(DIN[15:8]),
 
     .clock_b(CLK_32M),
@@ -94,7 +93,7 @@ dpramv #(.widthad_a(12)) ram_10
     .clock_a(CLK_32M),
     .address_a(A[13:2]),
     .q_a(dout_10),
-    .wren_a(WR & A[1] & BYTE_SEL[0]),
+    .wren_a(WR & A[1]),
     .data_a(DIN[7:0]),
 
     .clock_b(CLK_32M),
@@ -109,7 +108,7 @@ dpramv #(.widthad_a(12)) ram_11
     .clock_a(CLK_32M),
     .address_a(A[13:2]),
     .q_a(dout_11),
-    .wren_a(WR & A[1] & BYTE_SEL[1]),
+    .wren_a(WR & A[1]),
     .data_a(DIN[15:8]),
 
     .clock_b(CLK_32M),

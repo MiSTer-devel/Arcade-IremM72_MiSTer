@@ -493,7 +493,6 @@ board_b_d board_b_d(
 
     .DIN(cpu_word_out),
     .A(cpu_word_addr),
-    .BYTE_SEL(cpu_word_byte_sel),
 
     .IO_DIN(cpu_io_out),
     .IO_A(cpu_io_addr),
@@ -551,7 +550,6 @@ sound sound(
     .DOUT_VALID(sound_dout_valid),
     
     .A(cpu_mem_addr),
-    .BYTE_SEL(cpu_mem_sel),
 
     .IO_A(cpu_io_addr),
     .IO_DIN(cpu_io_out),
@@ -604,7 +602,7 @@ kna91h014 obj_pal(
     .E1_N(), // TODO
     .E2_N(), // TODO
     
-    .MWR(MWR & cpu_word_byte_sel[0]),
+    .MWR(MWR),
     .MRD(MRD),
 
     .DIN(cpu_word_out),
@@ -642,7 +640,6 @@ sprite sprite(
     .DOUT_VALID(sprite_dout_valid),
     
     .A(cpu_word_addr),
-    .BYTE_SEL(cpu_word_byte_sel),
 
     .BUFDBEN(sprite_memrq),
     .MRD(MRD),

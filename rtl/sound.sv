@@ -30,7 +30,6 @@ module sound (
     output DOUT_VALID,
     
     input [19:0] A,
-    input [1:0] BYTE_SEL,
 
     input [7:0] IO_A,
     input [7:0] IO_DIN,
