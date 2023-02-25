@@ -16,16 +16,16 @@ module sample_rom(
 );
 
 /// SAMPLE ROM
-dpramv #(.widthad_a(18)) sample_rom
+dpramv #(.widthad_a(17)) sample_rom
 (
     .clock_a(clk),
-    .address_a(sample_addr),
+    .address_a(sample_addr[16:0]),
     .q_a(sample_data),
     .wren_a(1'b0),
     .data_a(),
 
     .clock_b(clk_bram),
-    .address_b(bram_addr[17:0]),
+    .address_b(bram_addr[16:0]),
     .data_b(bram_data),
     .wren_b(bram_cs & bram_wr),
     .q_b()
