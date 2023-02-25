@@ -576,6 +576,8 @@ sound sound(
 
     .m84(m84),
 
+    .video_timing(video_timing),
+
     .clk_bram(clk_bram),
     .bram_wr(bram_wr),
     .bram_data(bram_data),

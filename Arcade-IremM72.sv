@@ -243,7 +243,7 @@ localparam CONF_STR = {
     "d2P1O[16:12],Crop Offset,0,1,2,3,4,5,6,7,8,-8,-7,-6,-5,-4,-3,-2,-1;",
     "P1-;",
     "P1O[20:17],Analog Video H-Pos,0,-1,-2,-3,-4,-5,-6,-7,8,7,6,5,4,3,2,1;",
-	"P1O[24:21],Analog Video V-Pos,0,-1,-2,-3,-4,-5,-6,-7,8,7,6,5,4,3,2,1;",
+    "P1O[24:21],Analog Video V-Pos,0,-1,-2,-3,-4,-5,-6,-7,8,7,6,5,4,3,2,1;",
     "-;",
     "O[7],OSD Pause,Off,On;",
     "O[25],Autosave Hiscores,Off,On;",
@@ -339,9 +339,9 @@ pll pll
     .rst(0),
     .outclk_0(CLK_96M),
     .outclk_1(CLK_32M),
-	.locked(pll_locked),
-	.reconfig_to_pll(reconfig_to_pll),
-	.reconfig_from_pll(reconfig_from_pll)
+    .locked(pll_locked),
+    .reconfig_to_pll(reconfig_to_pll),
+    .reconfig_from_pll(reconfig_from_pll)
 );
 
 wire [63:0] reconfig_to_pll;
@@ -353,21 +353,22 @@ reg  [31:0] cfg_data;
 
 pll_cfg pll_cfg
 (
-	.mgmt_clk(CLK_50M),
-	.mgmt_reset(0),
-	.mgmt_waitrequest(cfg_waitrequest),
-	.mgmt_read(0),
-	.mgmt_readdata(),
-	.mgmt_write(cfg_write),
-	.mgmt_address(cfg_address),
-	.mgmt_writedata(cfg_data),
-	.reconfig_to_pll(reconfig_to_pll),
-	.reconfig_from_pll(reconfig_from_pll)
+    .mgmt_clk(CLK_50M),
+    .mgmt_reset(0),
+    .mgmt_waitrequest(cfg_waitrequest),
+    .mgmt_read(0),
+    .mgmt_readdata(),
+    .mgmt_write(cfg_write),
+    .mgmt_address(cfg_address),
+    .mgmt_writedata(cfg_data),
+    .reconfig_to_pll(reconfig_to_pll),
+    .reconfig_from_pll(reconfig_from_pll)
 );
 
 
 localparam PLL_PARAM_COUNT = 7;
 
+// 96Mhz, 32Mhz
 wire [31:0] PLL_55HZ[PLL_PARAM_COUNT * 2] = '{
     'h0, 'h0, // set waitrequest mode
     'h4, 'h1818, // M COUNTER
@@ -378,6 +379,7 @@ wire [31:0] PLL_55HZ[PLL_PARAM_COUNT * 2] = '{
     'h2, 'h0 // start reconfigure
 };
 
+// 99.450549 Mhz, 33.150183 Mhz
 wire [31:0] PLL_57HZ[PLL_PARAM_COUNT * 2] = '{
     'h0, 'h0, // set waitrequest mode
     'h4, 'h25b5a, // M COUNTER
@@ -388,13 +390,14 @@ wire [31:0] PLL_57HZ[PLL_PARAM_COUNT * 2] = '{
     'h2, 'h0 // start reconfigure
 };
 
+// 104.687500 Mhz, 34.895833 Mhz
 wire [31:0] PLL_60HZ[PLL_PARAM_COUNT * 2] = '{
     'h0, 'h0, // set waitrequest mode
-    'h4, 'h27e7d, // M COUNTER
-    'h3, 'h505, // N COUNTER
-    'h5, 'h606, // C0 COUNTER
-    'h5, 'h41212, // C1 COUNTER
-    'h8, 'h2, // BANDWIDTH SETTING
+    'h4, 'h22221, // M COUNTER
+    'h3, 'h202, // N COUNTER
+    'h5, 'h404, // C0 COUNTER
+    'h5, 'h40c0c, // C1 COUNTER
+    'h8, 'h6, // BANDWIDTH SETTING
     'h2, 'h0 // start reconfigure
 };
 
@@ -402,14 +405,14 @@ video_timing_t video_timing_lat = VIDEO_55HZ;
 reg reconfig_pause = 0;
 
 always @(posedge CLK_50M) begin
-	reg [3:0] param_idx = 0;
+    reg [3:0] param_idx = 0;
     reg [7:0] reconfig = 0;
 
-	cfg_write <= 0;
+    cfg_write <= 0;
 
-	if (pll_locked & ~cfg_waitrequest) begin
+    if (pll_locked & ~cfg_waitrequest) begin
         pll_init_locked <= 1;
-		if (&reconfig) begin // do reconfig
+        if (&reconfig) begin // do reconfig
             case(video_timing_lat)
             VIDEO_50HZ: begin
                 cfg_address <= PLL_55HZ[param_idx * 2 + 0][5:0];
@@ -708,42 +711,20 @@ wire [3:0]	hoffset = status[20:17];
 wire [3:0]	voffset = status[24:21];
 jtframe_resync jtframe_resync
 (
-	.clk(CLK_VIDEO),
-	.pxl_cen(ce_pix),
-	.hs_in(hs_core),
-	.vs_in(vs_core),
-	.LVBL(~VBlank),
-	.LHBL(~HBlank),
-	.hoffset(hoffset),
-	.voffset(voffset),
-	.hs_out(HSync),
-	.vs_out(VSync)
+    .clk(CLK_VIDEO),
+    .pxl_cen(ce_pix),
+    .hs_in(hs_core),
+    .vs_in(vs_core),
+    .LVBL(~VBlank),
+    .LHBL(~HBlank),
+    .hoffset(hoffset),
+    .voffset(voffset),
+    .hs_out(HSync),
+    .vs_out(VSync)
 );
-
-wire gamma_hsync, gamma_vsync, gamma_hblank, gamma_vblank;
-wire [7:0] gamma_r, gamma_g, gamma_b;
-gamma_fast video_gamma
-(
-    .clk_vid(CLK_VIDEO),
-    .ce_pix(ce_pix),
-    .gamma_bus(gamma_bus),
-    .HSync(HSync),
-    .VSync(VSync),
-    .HBlank(HBlank),
-    .VBlank(VBlank),
-    .DE(),
-    .RGB_in({R, G, B}),
-    .HSync_out(gamma_hsync),
-    .VSync_out(gamma_vsync),
-    .HBlank_out(gamma_hblank),
-    .VBlank_out(gamma_vblank),
-    .DE_out(),
-    .RGB_out({gamma_r, gamma_g, gamma_b})
-);
-
 
 wire VGA_DE_MIXER;
-video_mixer #(386, 0, 0) video_mixer(
+video_mixer #(512, 0, 1) video_mixer(
     .CLK_VIDEO(CLK_VIDEO),
     .CE_PIXEL(CE_PIXEL),
     .ce_pix(ce_pix),
@@ -751,16 +732,16 @@ video_mixer #(386, 0, 0) video_mixer(
     .scandoubler(forced_scandoubler || scandoubler_fx != 2'b00),
     .hq2x(0),
 
-    .gamma_bus(),
+    .gamma_bus(gamma_bus),
 
-    .R(gamma_r),
-    .G(gamma_g),
-    .B(gamma_b),
+    .R(R),
+    .G(G),
+    .B(B),
 
-    .HBlank(gamma_hblank),
-    .VBlank(gamma_vblank),
-    .HSync(gamma_hsync),
-    .VSync(gamma_vsync),
+    .HBlank(HBlank),
+    .VBlank(VBlank),
+    .HSync(HSync),
+    .VSync(VSync),
 
     .VGA_R(VGA_R),
     .VGA_G(VGA_G),
@@ -836,24 +817,24 @@ reg hs_data_ready;
 
 
 hiscore #(
-		.HS_ADDRESSWIDTH(17)
+        .HS_ADDRESSWIDTH(17)
 ) hi (
-	.*,
-	.clk(clk_sys),
-	.paused(system_pause),
-	.autosave(status[25]),
-	.ram_address(hs_address),
-	.data_ready(hs_data_ready),
-	.data_from_ram(hs_data_out),
-	.data_to_ram(hs_data_in),
-	.data_from_hps(ioctl_dout),
-	.data_to_hps(ioctl_din),
-	.ram_write(hs_write_enable),
-  .ram_read(hs_read_enable),
-	.ram_intent_read(hs_access_read),
-	.ram_intent_write(hs_access_write),
-	.pause_cpu(hs_pause),
-	.configured(hs_configured)
+    .*,
+    .clk(clk_sys),
+    .paused(system_pause),
+    .autosave(status[25]),
+    .ram_address(hs_address),
+    .data_ready(hs_data_ready),
+    .data_from_ram(hs_data_out),
+    .data_to_ram(hs_data_in),
+    .data_from_hps(ioctl_dout),
+    .data_to_hps(ioctl_din),
+    .ram_write(hs_write_enable),
+    .ram_read(hs_read_enable),
+    .ram_intent_read(hs_access_read),
+    .ram_intent_write(hs_access_write),
+    .pause_cpu(hs_pause),
+    .configured(hs_configured)
 );
 endmodule
 

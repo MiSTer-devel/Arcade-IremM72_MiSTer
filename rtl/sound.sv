@@ -55,6 +55,8 @@ module sound (
 
     input m84,
 
+    input video_timing_t video_timing,
+
     output [15:0] ym_audio_l,
     output [15:0] ym_audio_r,
 
@@ -71,8 +73,8 @@ wire CE_AUDIO, CE_AUDIO_P1;
 jtframe_frac_cen #(2) jt51_cen
 (
     .clk(CLK_32M),
-    .n(10'd83),
-    .m(10'd742),
+    .n(video_timing == VIDEO_57HZ ? 10'd23  : video_timing == VIDEO_60HZ ? 10'd103  : 10'd83),
+    .m(video_timing == VIDEO_57HZ ? 10'd213 : video_timing == VIDEO_60HZ ? 10'd1004 : 10'd742),
     .cen({CE_AUDIO_P1, CE_AUDIO})
 );
 

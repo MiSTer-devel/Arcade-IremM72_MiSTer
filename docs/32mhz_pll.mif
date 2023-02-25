@@ -1,3 +1,5 @@
+-- 96 Mhz, 32 Mhz
+
 DEPTH = 512;
 WIDTH = 32;
 ADDRESS_RADIX = UNS;
