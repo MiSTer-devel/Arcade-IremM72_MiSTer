@@ -1,7 +1,7 @@
 <misterromdescription>
     <name>Gallop - Armed Police Unit (Japan, M72 hardware)</name>
     <mameversion>0245</mameversion>
-    <setname>gallop</setname>
+    <setname>gallopm72</setname>
     <parent>cosmccop</parent>
     <year>1991</year>
     <manufacturer>Irem</manufacturer>
