@@ -50,3 +50,4 @@ verilator/audio.wav
 roms/*
 
 reverse_eng/*
+_hdl_checker/*
