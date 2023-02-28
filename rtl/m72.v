@@ -350,10 +350,6 @@ cpu v30(
     .cpu_irqrequest(),
     .cpu_prefix(),
 
-    .dma_active(0),
-    .sdma_request(0),
-    .canSpeedup(),
-
     .bus_read(cpu_mem_read_w),
     .bus_write(cpu_mem_write_w),
     .bus_be(cpu_mem_sel),
