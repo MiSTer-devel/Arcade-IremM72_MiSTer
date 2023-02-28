@@ -65,7 +65,7 @@ reg valid_rom = 0;
 
 always @(posedge clk_bram) if (bram_prom_cs & bram_wr) valid_rom <= 1;
 
-reg [2:0] delayed_ce_count = 0;
+reg [3:0] delayed_ce_count = 0;
 wire delayed_ce = ce_8m & ~|delayed_ce_count;
 
 
@@ -183,7 +183,7 @@ always @(posedge CLK_32M) begin
             end
 
             16'hcxxx: begin
-                if (ext_we) delayed_ce_count <= 7;
+                if (ext_we) delayed_ce_count <= 14;
                 mcu_ext_ram_addr <= ext_addr[11:0];
                 mcu_ext_ram_dout <= ext_dout;
                 mcu_ext_ram_cs <= ext_cs;

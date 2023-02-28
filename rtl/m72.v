@@ -117,15 +117,16 @@ always @(posedge CLK_32M) begin
     end
 end
 
-reg [1:0] ce_counter_cpu, ce_counter_mcu;
+reg [1:0] ce_counter_cpu;
 reg ce_cpu, ce_4x_cpu, ce_mcu;
+wire ce_mcu_nopause;
 
 always @(posedge CLK_32M) begin
     if (!reset_n) begin
         ce_cpu <= 0;
         ce_4x_cpu <= 0;
         ce_counter_cpu <= 0;
-        ce_counter_mcu <= 0;
+        ce_mcu <= 0;
     end else begin
         ce_cpu <= 0;
         ce_4x_cpu <= 0;
@@ -137,19 +138,26 @@ always @(posedge CLK_32M) begin
                 ce_4x_cpu <= 1;
                 ce_cpu <= &ce_counter_cpu;
             end
-            ce_counter_mcu <= ce_counter_mcu + 2'd1;
-            ce_mcu <= &ce_counter_mcu;
+            ce_mcu <= ce_mcu_nopause;
         end
     end
 end
 
-wire ce_pix_half;
+wire ce_pix_half, ce_mcu_half;
 jtframe_frac_cen #(2) pixel_cen
 (
     .clk(CLK_32M),
     .n(10'd1),
     .m(10'd4),
     .cen({ce_pix_half, ce_pix})
+);
+
+jtframe_frac_cen #(2) mcu_cen
+(
+    .clk(CLK_32M),
+    .n(video_timing == VIDEO_57HZ ? 10'd153 : video_timing == VIDEO_60HZ ? 10'd221  : 10'd1),
+    .m(video_timing == VIDEO_57HZ ? 10'd634 : video_timing == VIDEO_60HZ ? 10'd964 : 10'd4),
+    .cen({ce_mcu_half, ce_mcu_nopause})
 );
 
 wire clock = CLK_32M;
