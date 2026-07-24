@@ -62,7 +62,13 @@ always @(posedge clk_l or posedge reset) begin
         int_l_ack <= 0;
         int_r_rq <= 0;
     end else if (cs_l) begin
-        if (we_l != 2'b00 && addr_l[11:1] == 'h7ff) int_r_rq <= ~int_r_ack;
+        // The 16-bit left port is a pair of MB8421s; the MCU-side interrupt
+        // comes from the high-byte (odd address) device only: byte 0xfff is
+        // the command byte (the dbreed i8751 polls it for changes), and the
+        // CPU writes 0xffe before 0xfff, so ringing on the 0xfff write makes
+        // command + interrupt atomic.  Ringing on either lane double-triggers
+        // the MCU when the CPU's byte writes straddle the MCU's acknowledge.
+        if (we_l[1] && addr_l[11:1] == 'h7ff) int_r_rq <= ~int_r_ack;
         if (we_l == 2'b00 && addr_l[11:1] == 'h7fe) int_l_ack <= int_l_rq;
     end
 end

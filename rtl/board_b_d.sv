@@ -31,7 +31,8 @@ module board_b_d (
     input [19:0] A,
 
     input [7:0] IO_A,
-    input [7:0] IO_DIN,
+    input [15:0] IO_DIN,
+    input [1:0] IO_BE,
 
     input MRD,
     input MWR,
@@ -125,7 +126,7 @@ board_b_d_layer layer_a(
     .WR(WRA),
 
     .IO_DIN(IO_DIN),
-    .IO_A(IO_A),
+    .IO_BE(IO_BE),
 
     .VSCK(VSCKA),
     .HSCK(HSCKA),
@@ -162,7 +163,7 @@ board_b_d_layer layer_b(
     .WR(WRB),
 
     .IO_DIN(IO_DIN),
-    .IO_A(IO_A),
+    .IO_BE(IO_BE),
 
     .VSCK(VSCKB),
     .HSCK(HSCKB),

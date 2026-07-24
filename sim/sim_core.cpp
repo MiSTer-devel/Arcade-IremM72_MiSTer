@@ -165,6 +165,7 @@ void SimCore::ServiceSdramChannels()
                 mTop->sdr_ch3_dout = dout;
             mLastCpuSdrAddr = mSDRAM->mPulseCh[2].addr;
             mLastCpuSdrRead = mSDRAM->mPulseCh[2].rnw != 0;
+            mLastCpuSdrIsCode = mTop->dbg_sdr_cpu_code != 0;
             mLastCpuSdrValid = true;
         }
         mTop->sdr_ch3_rdy = rdy;
@@ -307,6 +308,11 @@ void SimCore::DebugLinkTick()
     if (!mDebugLinkEnabled || !mTop)
         return;
     if (!mLastCpuSdrValid || !mLastCpuSdrRead)
+        return;
+    // Only data reads (BS==MEMR) drive the comms handshake. Instruction
+    // prefetches (BS==CODE) can touch the same ROM addresses without meaning a
+    // read, so skip them to avoid spurious acks/byte advances.
+    if (mLastCpuSdrIsCode)
         return;
 
     const uint32_t byteAddr = mLastCpuSdrAddr & DEBUG_LINK_ROM_MASK;

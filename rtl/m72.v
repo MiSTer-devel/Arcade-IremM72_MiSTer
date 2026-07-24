@@ -97,7 +97,12 @@ module m72 (
 
     input video_timing_t video_timing,
 
-    output ddr_debug_data_t ddr_debug_data
+    output ddr_debug_data_t ddr_debug_data,
+
+    // Full V30 register file for the sim CPU window (zeros unless V30_BACKDOOR).
+    output [223:0] dbg_v30_regs,
+    // code_fetch flag latched with the last CPU SDRAM request (sim DebugLink).
+    output reg sdr_cpu_code
 );
 
 // Divide 32Mhz clock by 4 for pixel clock
@@ -118,28 +123,29 @@ always @(posedge CLK_32M) begin
 end
 
 reg [1:0] ce_counter_cpu;
-reg ce_cpu, ce_4x_cpu, ce_mcu;
+reg ce_cpu, ce_cpu_half, ce_mcu;
 wire ce_mcu_nopause;
 
-always @(posedge CLK_32M) begin
-    if (!reset_n) begin
-        ce_cpu <= 0;
-        ce_4x_cpu <= 0;
-        ce_counter_cpu <= 0;
-        ce_mcu <= 0;
-    end else begin
-        ce_cpu <= 0;
-        ce_4x_cpu <= 0;
-        ce_mcu <= 0;
+// CE-freeze stall: withhold the CPU clock train while an SDRAM access is
+// outstanding. The new-request term covers the 1-clk gap between a request
+// being decoded and mem_rq_active going high, so the core never advances a
+// T-state mid-request. The CE train free-runs during reset (the v30_core
+// needs a running clock to execute its boot/reset-vector sequence); the core
+// itself is held in reset via reset_n.
+wire cpu_stall = mem_rq_active | cpu_new_sdr_req;
 
-        if (~paused) begin
-            if (~ls245_en && ~mem_rq_active) begin // stall main cpu while fetching from sdram
-                ce_counter_cpu <= ce_counter_cpu + 2'd1;
-                ce_4x_cpu <= 1;
-                ce_cpu <= &ce_counter_cpu;
-            end
-            ce_mcu <= ce_mcu_nopause;
+always @(posedge CLK_32M) begin
+    ce_cpu <= 0;
+    ce_cpu_half <= 0;
+    ce_mcu <= 0;
+
+    if (~paused) begin
+        if (~cpu_stall) begin
+            ce_counter_cpu <= ce_counter_cpu + 2'd1;
+            ce_cpu <= &ce_counter_cpu;             // one CPU clock every 4 fabric clocks
+            ce_cpu_half <= ce_counter_cpu == 2'd1; // 2 fabric clocks after ce_cpu
         end
+        ce_mcu <= reset_n ? ce_mcu_nopause : 1'b0;
     end
 end
 
@@ -152,50 +158,50 @@ jtframe_frac_cen #(2) pixel_cen
     .cen({ce_pix_half, ce_pix})
 );
 
+// The mc8051 core executes roughly one instruction per cen, but a real 8751
+// takes 12 oscillator clocks per machine cycle.  Divide the 8MHz oscillator
+// rate by 12 (cen = 32M/48) so the MCU runs at authentic speed relative to
+// the cycle-accurate V30 - the dbreed i8751 handshake is timing sensitive.
+// TODO: scale the 57/60Hz alternates the same way (n/m are 10-bit, needs
+// reduced fractions).
 jtframe_frac_cen #(2) mcu_cen
 (
     .clk(CLK_32M),
-    .n(video_timing == VIDEO_57HZ ? 10'd153 : video_timing == VIDEO_60HZ ? 10'd221  : 10'd1),
-    .m(video_timing == VIDEO_57HZ ? 10'd634 : video_timing == VIDEO_60HZ ? 10'd964 : 10'd4),
+    .n(10'd1),
+    .m(video_timing == VIDEO_57HZ ? 10'd50 : video_timing == VIDEO_60HZ ? 10'd52 : 10'd48),
     .cen({ce_mcu_half, ce_mcu_nopause})
 );
 
 wire clock = CLK_32M;
 
-/* Global signals from schematics */
-wire IOWR = cpu_io_write; // IO Write
-wire IORD = cpu_io_read; // IO Read
-wire MWR = cpu_mem_write; // Mem Write
-wire MRD = cpu_mem_read; // Mem Read
-wire DBEN = cpu_io_write | cpu_io_read | cpu_mem_read | cpu_mem_write;
+/* Global signals from schematics. Strobes come straight from the v30_bus
+ * adapter now: reads are levels (T1-half..T4), writes are held during T3. The
+ * bus is word-aligned (cpu_mem_addr[0]==0) with per-byte enables in cpu_be, so
+ * the old word_shuffle / cpu_word_* realignment machinery is gone. */
+wire mem_rd, mem_wr, io_rd, io_wr, code_fetch;
+
+wire IOWR = io_wr; // IO Write
+wire IORD = io_rd; // IO Read
+wire MWR = mem_wr; // Mem Write
+wire MRD = mem_rd; // Mem Read
+wire DBEN = io_rd | io_wr | mem_rd | mem_wr;
 
 wire TNSL;
 
 wire m84 = board_cfg.m84;
 
-wire [15:0] cpu_mem_out;
-wire [19:0] cpu_mem_addr;
-wire [1:0] cpu_mem_sel;
+wire [19:0] cpu_mem_addr;   // word-aligned CPU address (bit0 == 0)
+wire [1:0]  cpu_be;         // [0]=low byte (A0==0), [1]=high byte (~UBE_N)
+wire [15:0] cpu_dout;       // CPU write data
+reg  [15:0] cpu_din;        // read data muxed back to the core (combinational)
+
 reg cpu_mem_read_lat, cpu_mem_write_lat;
 reg hs_mem_read_lat, hs_mem_write_lat;
-wire cpu_mem_read_w, cpu_mem_write_w;
-wire cpu_mem_read = cpu_mem_read_w | cpu_mem_read_lat;
-wire cpu_mem_write = cpu_mem_write_w | cpu_mem_write_lat;
+wire cpu_mem_read = mem_rd | cpu_mem_read_lat;
+wire cpu_mem_write = mem_wr | cpu_mem_write_lat;
 wire hs_mem_read = hs_read_enable | hs_mem_read_lat;
 wire hs_mem_write = hs_write_enable | hs_mem_write_lat;
 
-
-wire cpu_io_read, cpu_io_write;
-wire [7:0] cpu_io_in;
-wire [7:0] cpu_io_out;
-wire [7:0] cpu_io_addr;
-
-wire [15:0] cpu_mem_in;
-
-
-wire [15:0] cpu_word_out = cpu_mem_addr[0] ? { cpu_mem_out[7:0], 8'h00 } : cpu_mem_out;
-wire [19:0] cpu_word_addr = { cpu_mem_addr[19:1], 1'b0 };
-wire [1:0] cpu_word_byte_sel = cpu_mem_addr[0] ? { cpu_mem_sel[0], 1'b0 } : cpu_mem_sel;
 reg [15:0] cpu_ram_rom_data;
 wire [24:0] cpu_region_addr;
 wire cpu_region_writable;
@@ -207,14 +213,13 @@ wire sprite_memrq;
 wire sprite_palette_memrq;
 wire sound_memrq;
 
-function [15:0] word_shuffle(input [19:0] addr, input [15:0] data);
-    begin
-        word_shuffle = addr[0] ? { 8'h00, data[15:8] } : data;
-    end
-endfunction
-
 reg mem_rq_active = 0;
 assign sdr_cpu_mem_rq = mem_rq_active;
+
+// A CPU SDRAM access is being decoded this cycle (mem_rq not yet asserted).
+// Feeds cpu_stall so the core is frozen across the 1-clk request-detect gap.
+wire cpu_new_sdr_req = ls245_en &&
+    ((mem_rd & ~cpu_mem_read_lat) || (mem_wr & ~cpu_mem_write_lat));
 
 reg b_d_dout_valid_lat, obj_pal_dout_valid_lat, sound_dout_valid_lat, sprite_dout_valid_lat;
 
@@ -226,8 +231,8 @@ begin
         sound_dout_valid_lat <= 0;
         sprite_dout_valid_lat <= 0;
     end else begin
-        cpu_mem_read_lat <= cpu_mem_read_w;
-        cpu_mem_write_lat <= cpu_mem_write_w;
+        cpu_mem_read_lat <= mem_rd;
+        cpu_mem_write_lat <= mem_wr;
         hs_mem_read_lat <= hs_read_enable;
         hs_mem_write_lat <= hs_write_enable;
 
@@ -258,12 +263,13 @@ always_ff @(posedge CLK_32M or negedge reset_n) begin
     end else begin
         hs_data_ready <= 0;
         if (!mem_rq_active) begin
-            if (ls245_en && ((cpu_mem_read_w & ~cpu_mem_read_lat) || (cpu_mem_write_w & ~cpu_mem_write_lat))) begin // sdram request
+            if (ls245_en && ((mem_rd & ~cpu_mem_read_lat) || (mem_wr & ~cpu_mem_write_lat))) begin // sdram request
                 sdr_cpu_wr_sel <= 2'b00;
                 sdr_cpu_addr <= cpu_region_addr;
+                sdr_cpu_code <= code_fetch;
                 if (cpu_mem_write & cpu_region_writable ) begin
-                    sdr_cpu_wr_sel <= cpu_word_byte_sel;
-                    sdr_cpu_din <= cpu_word_out;
+                    sdr_cpu_wr_sel <= cpu_be;
+                    sdr_cpu_din <= cpu_dout;
                 end
                 sdr_cpu_rq <= ~sdr_cpu_rq;
                 mem_rq_active <= 1;
@@ -311,10 +317,11 @@ wire NL = SOFT_NL ^ dip_sw[8];
 
 // TODO BANK, CBLK, NL
 always @(posedge CLK_32M) begin
-    if (IOWR && cpu_io_addr == 8'h02) sys_flags <= cpu_io_out[7:0];
+    if (IOWR && cpu_mem_addr[7:1] == 7'h01 && cpu_be[0]) sys_flags <= cpu_dout[7:0];
 end
 
-// mux io and memory reads
+// mux io and memory reads. The bus is word-aligned so no byte shuffling: the
+// core samples cpu_din as a full 16-bit word and picks bytes via cpu_be.
 always_comb begin
     bit [15:0] d16;
     bit [15:0] io16;
@@ -325,66 +332,46 @@ always_comb begin
     else if (sprite_dout_valid_lat) d16 = sprite_dout;
     else if (cpu_mem_addr[19:16] == 4'hb) d16 = cpu_shared_ram_dout;
     else d16 = cpu_ram_rom_data;
-    cpu_mem_in = word_shuffle(cpu_mem_addr, d16);
 
-    case ({cpu_io_addr[7:1], 1'b0})
-    8'h00: io16 = switches;
-    8'h02: io16 = flags;
-    8'h04: io16 = dip_sw;
+    case (cpu_mem_addr[7:1])
+    7'h00: io16 = switches;
+    7'h01: io16 = flags;
+    7'h02: io16 = dip_sw;
     default: io16 = 16'hffff;
     endcase
 
-    cpu_io_in = cpu_io_addr[0] ? io16[15:8] : io16[7:0];
+    cpu_din = (IORD | IOWR) ? io16 : d16;
 end
 
-cpu v30(
+v30_bus v30(
     .clk(CLK_32M),
-    .ce(ce_cpu), // TODO
-    .ce_4x(ce_4x_cpu), // TODO
+    .ce(ce_cpu),
+    .ce_half(ce_cpu_half),
     .reset(~reset_n),
-    .turbo(0),
-    .SLOWTIMING(0),
 
-    .cpu_idle(),
-    .cpu_halt(),
-    .cpu_irqrequest(),
-    .cpu_prefix(),
+    .cpu_addr(cpu_mem_addr),
+    .cpu_be(cpu_be),
+    .cpu_dout(cpu_dout),
+    .cpu_din(cpu_din),
 
-    .bus_read(cpu_mem_read_w),
-    .bus_write(cpu_mem_write_w),
-    .bus_be(cpu_mem_sel),
-    .bus_addr(cpu_mem_addr),
-    .bus_datawrite(cpu_mem_out),
-    .bus_dataread(cpu_mem_in),
+    .mem_rd(mem_rd),
+    .io_rd(io_rd),
+    .mem_wr(mem_wr),
+    .io_wr(io_wr),
+    .code_fetch(code_fetch),
 
-    .irqrequest_in(int_req),
-    .irqvector_in(int_vector),
-    .irqrequest_ack(int_ack),
+    .int_req(int_req),
+    .int_vector(int_vector),
+    .int_ack(int_ack),
 
-    .load_savestate(0),
-
-    // TODO
-    .cpu_done(),
-    .cpu_export_opcode(cpu_export_opcode),
-    .cpu_export_reg_cs(cpu_export_reg_cs),
-    .cpu_export_reg_ip(cpu_export_reg_ip),
-
-    .RegBus_Din(cpu_io_out),
-    .RegBus_Adr(cpu_io_addr),
-    .RegBus_wren(cpu_io_write),
-    .RegBus_rden(cpu_io_read),
-    .RegBus_Dout(cpu_io_in),
-
-    .sleep_savestate(paused)
+    .dbg_regs(dbg_v30_regs)
 );
 
-wire [15:0] cpu_export_reg_cs;
-wire [15:0] cpu_export_reg_ip;
-wire [7:0] cpu_export_opcode;
-
-assign ddr_debug_data.cpu_cs = cpu_export_reg_cs;
-assign ddr_debug_data.cpu_ip = cpu_export_reg_ip;
-assign ddr_debug_data.cpu_opcode = cpu_export_opcode;
+// DDR trace CPU taps are pruned with the VHDL export unit. TODO: reconstruct
+// cs/ip/opcode from dbg_v30_regs if the on-FPGA DDR tracer is ever revived.
+assign ddr_debug_data.cpu_cs = 16'd0;
+assign ddr_debug_data.cpu_ip = 16'd0;
+assign ddr_debug_data.cpu_opcode = 8'd0;
 
 wire m_io = MRD | MWR;
 wire sprite_dma;
@@ -393,9 +380,9 @@ wire [15:0] iset_data;
 wire snd_latch1_wr, snd_latch2_wr;
 
 address_translator address_translator(
-    .A(m_io ? cpu_mem_addr : {8'h00, cpu_io_addr}),
-    .data(m_io ? cpu_mem_out : {8'h00, cpu_io_out}),
-    .bytesel(m_io ? cpu_mem_sel : 2'b01),
+    .A(m_io ? cpu_mem_addr : {12'h000, cpu_mem_addr[7:0]}),
+    .data(cpu_dout),
+    .bytesel(cpu_be),
     .rd(m_io ? MRD : IORD),
     .wr(m_io ? MWR : IOWR),
     .M_IO(m_io),
@@ -420,19 +407,19 @@ address_translator address_translator(
 );
 
 wire int_req, int_ack;
-wire [8:0] int_vector;
+wire [7:0] int_vector;
 
 m72_pic m72_pic(
     .clk(CLK_32M),
     .ce(ce_cpu),
     .reset(~reset_n),
 
-    .cs((IORD | IOWR) & ~cpu_io_addr[7] & cpu_io_addr[6]), // 0x40-0x43
-    .wr(IOWR),
+    .cs((IORD | IOWR) & ~cpu_mem_addr[7] & cpu_mem_addr[6]), // 0x40-0x43
+    .wr(IOWR & cpu_be[0]),
     .rd(0),
-    .a0(cpu_io_addr[1]),
-    
-    .din(cpu_io_out),
+    .a0(cpu_mem_addr[1]),
+
+    .din(cpu_dout[7:0]),
 
     .int_req(int_req),
     .int_vector(int_vector),
@@ -493,11 +480,12 @@ board_b_d board_b_d(
     .DOUT(b_d_dout),
     .DOUT_VALID(b_d_dout_valid),
 
-    .DIN(cpu_word_out),
-    .A(cpu_word_addr),
+    .DIN(cpu_dout),
+    .A(cpu_mem_addr),
 
-    .IO_DIN(cpu_io_out),
-    .IO_A(cpu_io_addr),
+    .IO_DIN(cpu_dout),
+    .IO_A(cpu_mem_addr[7:0]),
+    .IO_BE(cpu_be),
 
     .MRD(MRD),
     .MWR(MWR),
@@ -547,14 +535,14 @@ wire [15:0] ym_audio_raw;
 sound sound(
     .reset(~reset_n),
     .CLK_32M(CLK_32M),
-    .DIN(cpu_mem_out),
+    .DIN(cpu_dout),
     .DOUT(sound_dout),
     .DOUT_VALID(sound_dout_valid),
-    
-    .A(cpu_mem_addr),
 
-    .IO_A(cpu_io_addr),
-    .IO_DIN(cpu_io_out),
+    .A(cpu_mem_addr),
+    .BE(cpu_be),
+
+    .IO_DIN(cpu_dout[7:0]),
 
     .SDBEN(sound_memrq & BRQ),
     .SND(snd_latch1_wr),
@@ -609,10 +597,10 @@ kna91h014 obj_pal(
     .MWR(MWR),
     .MRD(MRD),
 
-    .DIN(cpu_word_out),
+    .DIN(cpu_dout),
     .DOUT(obj_pal_dout),
     .DOUT_VALID(obj_pal_dout_valid),
-    .A(cpu_word_addr),
+    .A(cpu_mem_addr),
 
     .RED(obj_pal_r),
     .GRN(obj_pal_g),
@@ -639,11 +627,11 @@ sprite sprite(
     .CLK_96M(CLK_96M),
     .CE_PIX(ce_pix),
 
-    .DIN(cpu_word_out),
+    .DIN(cpu_dout),
     .DOUT(sprite_dout),
     .DOUT_VALID(sprite_dout_valid),
-    
-    .A(cpu_word_addr),
+
+    .A(cpu_mem_addr),
 
     .BUFDBEN(sprite_memrq),
     .MRD(MRD),
@@ -676,11 +664,11 @@ wire [7:0] mcu_sample_out;
 dualport_mailbox_2kx16 mcu_shared_ram(
     .reset(~reset_n),
     .clk_l(CLK_32M),
-    .addr_l(cpu_word_addr[11:1]),
+    .addr_l(cpu_mem_addr[11:1]),
     .cs_l(1'b1),
-    .din_l(cpu_word_out),
+    .din_l(cpu_dout),
     .dout_l(cpu_shared_ram_dout),
-    .we_l((cpu_word_addr[19:16] == 4'hb && MWR) ? cpu_word_byte_sel : 2'b00),
+    .we_l((cpu_mem_addr[19:16] == 4'hb && MWR) ? cpu_be : 2'b00),
     .int_l(),
 
     .clk_r(CLK_32M),
@@ -692,8 +680,8 @@ dualport_mailbox_2kx16 mcu_shared_ram(
     .int_r(mcu_ram_int)
 );
 
-wire [7:0] mculatch_data = board_cfg.main_mculatch ? cpu_io_out : snd_io_data;
-wire mculatch_en = board_cfg.main_mculatch ? ( IOWR && cpu_io_addr == 8'hc0 ) : ( snd_io_req && snd_io_addr == 8'h82 );
+wire [7:0] mculatch_data = board_cfg.main_mculatch ? cpu_dout[7:0] : snd_io_data;
+wire mculatch_en = board_cfg.main_mculatch ? ( IOWR && cpu_mem_addr[7:1] == 7'h60 && cpu_be[0] ) : ( snd_io_req && snd_io_addr == 8'h82 );
 
 mcu mcu(
     .CLK_32M(CLK_32M),
@@ -846,12 +834,12 @@ always @(posedge CLK_32M) begin
     reg [15:0] data;
     reg [1:0] we;
 
-    cs <= (cpu_word_addr[19:16] == 4'hb) && ( MWR || MRD );
-    addr <= cpu_word_addr[11:0];
-    data <= cpu_word_out;
-    we <= MWR ? cpu_word_byte_sel : 2'b00;
+    cs <= (cpu_mem_addr[19:16] == 4'hb) && ( MWR || MRD );
+    addr <= cpu_mem_addr[11:0];
+    data <= cpu_dout;
+    we <= MWR ? cpu_be : 2'b00;
 
-    if (cs & ~((cpu_word_addr[19:16] == 4'hb) && ( MWR || MRD ))) begin
+    if (cs & ~((cpu_mem_addr[19:16] == 4'hb) && ( MWR || MRD ))) begin
         dbg_cpu_ext_addr <= addr;
         dbg_cpu_ext_we <= we;
         if (we != 2'b00) dbg_cpu_ext_data <= data;

@@ -31,7 +31,7 @@ module m72_pic(
     input [7:0] din,
 
     output reg int_req,
-    output reg [8:0] int_vector,
+    output reg [7:0] int_vector,
     input int_ack,
 
     input [7:0] intp
@@ -130,7 +130,9 @@ always_ff @(posedge clk or posedge reset) begin
                     if (intp[p]) begin
                         if (trig[p] & ~IMW[p]) begin
                             int_req <= 1;
-                            int_vector <= {IW2[6:3], p[2:0], 2'b00};
+                            // Full 8-bit vector NUMBER (was a byte offset that
+                            // dropped IW2[7] and appended 2'b00 for the VHDL core).
+                            int_vector <= {IW2[7:3], p[2:0]};
                         end
                         t = 1;
                     end

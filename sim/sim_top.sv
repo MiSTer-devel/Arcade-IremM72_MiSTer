@@ -65,10 +65,12 @@ module sim_top(
     output     [15:0] audio_l,
     output     [15:0] audio_r,
 
-    // debug taps (from ddr_debug_data)
+    // debug taps
     output     [15:0] dbg_cpu_cs,
     output     [15:0] dbg_cpu_ip,
     output      [7:0] dbg_cpu_opcode,
+    output    [223:0] dbg_cpu_regs,      // full V30 register file (V30_BACKDOOR)
+    output            dbg_sdr_cpu_code,  // last CPU SDRAM access was a prefetch
 
     // debug/config toggles (mirrors the OSD debug page, all default-on)
     input             en_layer_a,
@@ -144,9 +146,15 @@ rom_loader rom_loader(
 ///////////////////////////////////////////////////////////////////////
 
 ddr_debug_data_t ddr_debug_data;
-assign dbg_cpu_cs = ddr_debug_data.cpu_cs;
-assign dbg_cpu_ip = ddr_debug_data.cpu_ip;
-assign dbg_cpu_opcode = ddr_debug_data.cpu_opcode;
+wire [223:0] dbg_v30_regs;
+wire         dbg_sdr_cpu_code_w;
+
+// dbg_v30_regs packing: {psw,ip,ds,ss,cs,es,di,si,bp,sp,bx,dx,cx,ax}
+assign dbg_cpu_regs = dbg_v30_regs;
+assign dbg_cpu_cs = dbg_v30_regs[159:144];
+assign dbg_cpu_ip = dbg_v30_regs[207:192];
+assign dbg_cpu_opcode = 8'd0;              // opcode export dropped with the VHDL core
+assign dbg_sdr_cpu_code = dbg_sdr_cpu_code_w;
 
 m72 m72_inst(
     .CLK_32M(clk_32m),
@@ -211,6 +219,8 @@ m72 m72_inst(
 
     .pause_rq(pause),
     .ddr_debug_data(ddr_debug_data),
+    .dbg_v30_regs(dbg_v30_regs),
+    .sdr_cpu_code(dbg_sdr_cpu_code_w),
 
     .en_layer_a(en_layer_a),
     .en_layer_b(en_layer_b),

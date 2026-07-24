@@ -28,10 +28,10 @@ module sound (
     input [15:0] DIN,
     output [15:0] DOUT,
     output DOUT_VALID,
-    
-    input [19:0] A,
 
-    input [7:0] IO_A,
+    input [19:0] A,
+    input [1:0] BE,
+
     input [7:0] IO_DIN,
 
     output [7:0] snd_io_addr,
@@ -115,8 +115,11 @@ wire M1_n;
 wire [15:0] z80_addr;
 wire z80_IORQ_n, z80_RD_n, z80_WR_n, z80_MREQ_n, z80_M1_n;
 
-wire [15:0] ram_addr = BRQ ? A[15:0] : z80_addr;
-wire [7:0] ram_data = BRQ ? DIN[7:0] : z80_dout;
+// Aligned-bus lane select: odd bytes ride the high lane (DIN[15:8]) with
+// BE=={1,0}. Even/word writes take the low lane.
+wire cpu_odd = BE[1] & ~BE[0];
+wire [15:0] ram_addr = BRQ ? {A[15:1], cpu_odd} : z80_addr;
+wire [7:0] ram_data = BRQ ? (cpu_odd ? DIN[15:8] : DIN[7:0]) : z80_dout;
 wire [7:0] z80_din;
 wire [7:0] z80_dout;
 
@@ -210,12 +213,12 @@ always @(posedge CLK_32M) begin
         nmi_counter <= nmi_counter + 12'd1;
         if (&nmi_counter) m84_nmi <= 1;
 
-        if (SND & ~IO_A[0]) begin
+        if (SND) begin
             snd_latch1 <= IO_DIN[7:0];
             snd_latch1_ready <= 1;
         end
 
-        if (SND2 & ~IO_A[0]) begin
+        if (SND2) begin
             snd_latch2 <= IO_DIN[7:0];
             snd_latch2_ready <= 1;
         end

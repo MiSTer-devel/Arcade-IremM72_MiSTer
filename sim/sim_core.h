@@ -137,6 +137,7 @@ class SimCore
     // Last completed ch3 (CPU) SDRAM transaction, for watchpoints/DebugLink
     uint32_t mLastCpuSdrAddr = 0xffffffff;
     bool mLastCpuSdrRead = false;
+    bool mLastCpuSdrIsCode = false;
     bool mLastCpuSdrValid = false;
 
   private:

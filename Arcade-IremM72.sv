@@ -545,7 +545,11 @@ m72 m72(
     .pause_rq(system_pause | reconfig_pause),
 `endif
     .ddr_debug_data(ddr_debug_data),
-    
+
+    // sim-only debug taps (pruned to zero without V30_BACKDOOR)
+    .dbg_v30_regs(),
+    .sdr_cpu_code(),
+
     .en_layer_a(en_layer_a),
     .en_layer_b(en_layer_b),
     .en_sprites(en_sprites),

@@ -38,13 +38,30 @@ class V30Window : public Window
         if (!gSimCore.mTop)
             return;
 
-        const uint16_t cs = gSimCore.mTop->dbg_cpu_cs;
-        const uint16_t ip = gSimCore.mTop->dbg_cpu_ip;
-        const uint8_t opcode = gSimCore.mTop->dbg_cpu_opcode;
+        // Packed 224-bit register file: 0=AX,1=CX,2=DX,3=BX,4=SP,5=BP,6=SI,
+        // 7=DI,8=ES,9=CS,10=SS,11=DS,12=IP,13=PSW (each 16-bit, half-word aligned).
+        auto reg16 = [](int idx) -> uint16_t {
+            const int word = idx / 2;
+            const int half = idx % 2;
+            return static_cast<uint16_t>((gSimCore.mTop->dbg_cpu_regs[word] >> (half * 16)) & 0xffffu);
+        };
+
+        const uint16_t ax = reg16(0), cx = reg16(1), dx = reg16(2), bx = reg16(3);
+        const uint16_t sp = reg16(4), bp = reg16(5), si = reg16(6), di = reg16(7);
+        const uint16_t es = reg16(8), cs = reg16(9), ss = reg16(10), ds = reg16(11);
+        const uint16_t ip = reg16(12), psw = reg16(13);
         const uint32_t linear = ((uint32_t)cs << 4) + ip;
 
-        ImGui::Text("CS:IP  %04X:%04X  (linear %05X)", cs, ip, linear);
-        ImGui::Text("Opcode %02X", opcode);
+        ImGui::Text("AX %04X  BX %04X  CX %04X  DX %04X", ax, bx, cx, dx);
+        ImGui::Text("SP %04X  BP %04X  SI %04X  DI %04X", sp, bp, si, di);
+        ImGui::Text("CS %04X  DS %04X  ES %04X  SS %04X", cs, ds, es, ss);
+        ImGui::Text("IP %04X  (CS:IP linear %05X)", ip, linear);
+        ImGui::Text("PSW %04X  %c%c%c%c%c%c%c%c%c", psw,
+                    (psw & 0x0800) ? 'O' : '-', (psw & 0x0400) ? 'D' : '-',
+                    (psw & 0x0200) ? 'I' : '-', (psw & 0x0100) ? 'T' : '-',
+                    (psw & 0x0080) ? 'S' : '-', (psw & 0x0040) ? 'Z' : '-',
+                    (psw & 0x0010) ? 'A' : '-', (psw & 0x0004) ? 'P' : '-',
+                    (psw & 0x0001) ? 'C' : '-');
 
         ImGui::Separator();
 

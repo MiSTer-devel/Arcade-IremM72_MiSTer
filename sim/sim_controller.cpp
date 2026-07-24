@@ -23,6 +23,17 @@
 namespace
 {
 
+// Extract a 16-bit register field from the packed 224-bit V30 debug vector.
+// Field index 0=AX,1=CX,2=DX,3=BX,4=SP,5=BP,6=SI,7=DI,8=ES,9=CS,10=SS,11=DS,
+// 12=IP,13=PSW (each 16 bits, aligned so it never crosses a 32-bit word).
+template <typename W>
+uint16_t V30RegField(const W &regs, int idx)
+{
+    const int word = idx / 2;
+    const int half = idx % 2;
+    return static_cast<uint16_t>((regs[word] >> (half * 16)) & 0xffffu);
+}
+
 const char *RunStopReasonToString(RunStopReason reason)
 {
     switch (reason)
@@ -326,9 +337,10 @@ ControllerResult<CpuState> SimController::GetCpuState() const
 
     CpuState state;
     state.mPc = gSimCore.GetCpuLinearPc();
-    state.mRegisters.push_back(gSimCore.mTop->dbg_cpu_cs);
-    state.mRegisters.push_back(gSimCore.mTop->dbg_cpu_ip);
-    state.mRegisters.push_back(gSimCore.mTop->dbg_cpu_opcode);
+    // Full register file from the V30 backdoor tap (packing:
+    // {psw,ip,ds,ss,cs,es,di,si,bp,sp,bx,dx,cx,ax}). Reported AX..PSW.
+    for (int idx = 0; idx < 14; idx++)
+        state.mRegisters.push_back(V30RegField(gSimCore.mTop->dbg_cpu_regs, idx));
     return ControllerResult<CpuState>::Success(state);
 }
 

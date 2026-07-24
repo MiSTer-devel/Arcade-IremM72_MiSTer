@@ -28,8 +28,8 @@ module board_b_d_layer(
     input RD,
     input WR,
 
-    input [7:0] IO_A,
-    input [7:0] IO_DIN,
+    input [15:0] IO_DIN,
+    input [1:0] IO_BE,
 
     input VSCK,
     input HSCK,
@@ -165,10 +165,10 @@ always @(posedge CLK_32M) begin
     if (paused) begin
         {adj_v, adj_h} <= paused_offsets[ve_latch];
     end else begin
-        if (VSCK & ~IO_A[0]) adj_v[7:0] <= IO_DIN[7:0];
-        if (HSCK & ~IO_A[0]) adj_h[7:0] <= IO_DIN[7:0];
-        if (VSCK & IO_A[0])  adj_v[8]   <= IO_DIN[0];
-        if (HSCK & IO_A[0])  adj_h[8]   <= IO_DIN[0];
+        if (VSCK & IO_BE[0]) adj_v[7:0] <= IO_DIN[7:0];
+        if (HSCK & IO_BE[0]) adj_h[7:0] <= IO_DIN[7:0];
+        if (VSCK & IO_BE[1]) adj_v[8]   <= IO_DIN[8];
+        if (HSCK & IO_BE[1]) adj_h[8]   <= IO_DIN[8];
         paused_offsets[ve_latch] <= {adj_v, adj_h};
     end
 end

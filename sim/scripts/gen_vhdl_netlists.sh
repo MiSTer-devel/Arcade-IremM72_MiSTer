@@ -1,9 +1,10 @@
 #!/bin/bash
 # Regenerate the Verilog netlists in sim/rtl_gen/ from the VHDL CPU cores.
 #
-# Verilator cannot compile VHDL, so the VHDL cores (V30, mc8051 MCU) are
-# converted to Verilog netlists with GHDL's yosys plugin.
-# The generated netlists are checked in; this script is only needed when the
+# Verilator cannot compile VHDL, so the remaining VHDL core (mc8051 MCU) is
+# converted to a Verilog netlist with GHDL's yosys plugin. The V30 CPU is now
+# native SystemVerilog (rtl/v30/*.sv) and needs no netlist.
+# The generated netlist is checked in; this script is only needed when the
 # VHDL sources change.
 #
 # Requires oss-cad-suite (yosys + ghdl + matched plugin):
@@ -20,18 +21,6 @@ if ! yosys -m ghdl -p "" >/dev/null 2>&1; then
     echo "error: yosys ghdl plugin not available - source the oss-cad-suite environment first" >&2
     exit 1
 fi
-
-echo "=== V30 (top: cpu) ==="
-yosys -q -m ghdl -p "
-  ghdl --std=08 \
-    $RTL/v30/registerpackage.vhd \
-    $RTL/v30/bus_savestates.vhd \
-    $RTL/v30/reg_savestates.vhd \
-    $RTL/v30/export.vhd \
-    $RTL/v30/divider.vhd \
-    $RTL/v30/cpu.vhd \
-    -e cpu;
-  write_verilog -norename $OUT/v30_cpu.v"
 
 echo "=== mc8051 (top: mc8051_core) ==="
 # Analysis order: package, then leaf entity/arch/cfg triplets bottom-up
@@ -64,7 +53,7 @@ if [ -s /tmp/dup_modules.txt ]; then
     cat /tmp/dup_modules.txt >&2
     exit 1
 fi
-for top in cpu mc8051_core; do
+for top in mc8051_core; do
     if ! grep -qh "^module $top(" "$OUT"/*.v; then
         echo "error: expected top module '$top' not found" >&2
         exit 1
