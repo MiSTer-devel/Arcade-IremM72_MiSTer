@@ -75,7 +75,7 @@ endif
 LDLIBS=$(shell pkg-config --libs sdl2) $(CAPSTONE_LIBS)
 
 # Verilog netlists generated from the VHDL CPU cores (checked in; see rtl_gen/README.md)
-NETLISTS = rtl_gen/v30_cpu.v rtl_gen/t80s.v rtl_gen/mc8051_core.v
+NETLISTS = rtl_gen/v30_cpu.v rtl_gen/mc8051_core.v
 
 # ddr_debug.sv first: it declares the file-scope ddr_debug_data_t typedef
 HDL_SRC  = ../rtl/ddr_debug.sv ../rtl/m72_pkg.sv
@@ -86,6 +86,7 @@ HDL_SRC += ../rtl/sprite.sv
 HDL_SRC += ../rtl/sound.sv ../rtl/sample_rom.sv
 HDL_SRC += ../rtl/mcu.sv ../rtl/mcu_emulator.sv ../rtl/dualport_mailbox.sv
 HDL_SRC += ../rtl/dpramv.sv ../rtl/rom.sv ../rtl/jtframe_frac_cen.v
+HDL_SRC += ../rtl/tv80/tv80s.v ../rtl/tv80/tv80_core.v ../rtl/tv80/tv80_alu.v ../rtl/tv80/tv80_mcode.v ../rtl/tv80/tv80_reg.v
 HDL_SRC += ../sys/iir_filter.v
 HDL_SRC += $(wildcard ../rtl/jt51/jt51*.v)
 HDL_SRC += $(NETLISTS)

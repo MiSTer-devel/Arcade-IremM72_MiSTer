@@ -1,8 +1,8 @@
 #!/bin/bash
 # Regenerate the Verilog netlists in sim/rtl_gen/ from the VHDL CPU cores.
 #
-# Verilator cannot compile VHDL, so the three VHDL cores (V30, T80 Z80,
-# mc8051 MCU) are converted to Verilog netlists with GHDL's yosys plugin.
+# Verilator cannot compile VHDL, so the VHDL cores (V30, mc8051 MCU) are
+# converted to Verilog netlists with GHDL's yosys plugin.
 # The generated netlists are checked in; this script is only needed when the
 # VHDL sources change.
 #
@@ -33,18 +33,6 @@ yosys -q -m ghdl -p "
     -e cpu;
   write_verilog -norename $OUT/v30_cpu.v"
 
-echo "=== T80 (top: T80s) ==="
-yosys -q -m ghdl -p "
-  ghdl --std=93c -fsynopsys -fexplicit \
-    $RTL/T80/T80_Pack.vhd \
-    $RTL/T80/T80_MCode.vhd \
-    $RTL/T80/T80_ALU.vhd \
-    $RTL/T80/T80_Reg.vhd \
-    $RTL/T80/T80.vhd \
-    $RTL/T80/T80s.vhd \
-    -e T80s;
-  write_verilog -norename $OUT/t80s.v"
-
 echo "=== mc8051 (top: mc8051_core) ==="
 # Analysis order: package, then leaf entity/arch/cfg triplets bottom-up
 # (same order as rtl/8051/mc8051.qip), then the core.
@@ -69,29 +57,6 @@ yosys -q -m ghdl -p "
     -e mc8051_core;
   write_verilog -norename $OUT/mc8051_core.v"
 
-# GHDL lowercases identifiers; the RTL instantiates `T80s`. Restore the
-# expected module name (case-only rename, safe with sed on the module header).
-if grep -q '^module t80s(' "$OUT/t80s.v"; then
-    sed -i '' 's/^module t80s(/module T80s(/' "$OUT/t80s.v"
-fi
-
-# sound.sv leaves WAIT_n and OUT0 unconnected, relying on the VHDL port
-# defaults ('1' and '0'). The Verilog netlist loses those defaults and
-# Verilator would tie the inputs to 0, permanently stalling the Z80 on
-# WAIT_n. Convert them to internal constants.
-sed -i '' \
-    -e 's/^module T80s(\(.*\)WAIT_n, \(.*\))/module T80s(\1\2)/' \
-    -e '/^  input WAIT_n;$/d' \
-    -e 's/^  wire WAIT_n;$/  wire WAIT_n = 1'"'"'b1;/' \
-    -e 's/^module T80s(\(.*\)OUT0, \(.*\))/module T80s(\1\2)/' \
-    -e '/^  input OUT0;$/d' \
-    -e 's/^  wire OUT0;$/  wire OUT0 = 1'"'"'b0;/' \
-    "$OUT/t80s.v"
-if grep -qE '^  (input|output).*(WAIT_n|OUT0)' "$OUT/t80s.v"; then
-    echo "error: WAIT_n/OUT0 tie-off patch failed" >&2
-    exit 1
-fi
-
 echo "=== checks ==="
 grep -h '^module ' "$OUT"/*.v | sort | uniq -d > /tmp/dup_modules.txt || true
 if [ -s /tmp/dup_modules.txt ]; then
@@ -99,7 +64,7 @@ if [ -s /tmp/dup_modules.txt ]; then
     cat /tmp/dup_modules.txt >&2
     exit 1
 fi
-for top in cpu T80s mc8051_core; do
+for top in cpu mc8051_core; do
     if ! grep -qh "^module $top(" "$OUT"/*.v; then
         echo "error: expected top module '$top' not found" >&2
         exit 1

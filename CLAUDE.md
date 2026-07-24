@@ -46,7 +46,7 @@ custom-chip reverse engineering.
   "B-D board" (layers A/B + palette). `rtl/sprite.sv` is the sprite engine. `rtl/kna91h014.v`
   is the object/sprite palette; `rtl/kna6034201.v` another KNA custom. Final RGB is mixed at
   the bottom of `m72.v` (sprite over background priority, `CBLK`).
-- **Sound**: `rtl/sound.sv` — Z80 (`rtl/T80/`) driving YM2151 (`rtl/jt51/`, jotego's core) and
+- **Sound**: `rtl/sound.sv` — Z80 (`rtl/tv80/`, Verilog tv80 core) driving YM2151 (`rtl/jt51/`, jotego's core) and
   a sample/DAC path (`rtl/sample_rom.sv`). M84 vs M72 sound differences are gated by `m84`.
 - **MCU / protection**: `rtl/mcu.sv` + `rtl/mcu_emulator.sv` (8051 core in `rtl/8051/`) emulate
   the i8751 used by some games (Gallop, Daiku no Gensan). Communicates with the main CPU via

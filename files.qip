@@ -32,6 +32,11 @@ set_global_assignment -name VHDL_FILE rtl/v30/cpu.vhd
 set_global_assignment -name VHDL_FILE rtl/v30/divider.vhd
 
 set_global_assignment -name QIP_FILE rtl/jt51/jt51.qip
-set_global_assignment -name QIP_FILE rtl/T80/T80.qip
 set_global_assignment -name QIP_FILE rtl/8051/mc8051.qip
+
+set_global_assignment -name VERILOG_FILE rtl/tv80/tv80s.v
+set_global_assignment -name VERILOG_FILE rtl/tv80/tv80_core.v
+set_global_assignment -name VERILOG_FILE rtl/tv80/tv80_alu.v
+set_global_assignment -name VERILOG_FILE rtl/tv80/tv80_mcode.v
+set_global_assignment -name VERILOG_FILE rtl/tv80/tv80_reg.v
 

@@ -152,21 +152,25 @@ assign snd_io_addr = z80_addr[7:0];
 assign snd_io_req = ~z80_IORQ_n;
 assign snd_io_data = z80_dout;
 
-T80s z80(
-    .RESET_n(~BRQ & ~reset),
-    .CLK(CLK_32M),
-    .CEN(CE_AUDIO & ~pause),
-    .INT_n(~(~SIRQ_N | snd_latch1_ready)),
-    .BUSRQ_n(~BRQ),
-    .M1_n(z80_M1_n),
-    .MREQ_n(z80_MREQ_n),
-    .IORQ_n(z80_IORQ_n),
-    .RD_n(z80_RD_n),
-    .WR_n(z80_WR_n),
+tv80s z80(
+    .reset_n(~BRQ & ~reset),
+    .clk(CLK_32M),
+    .cen(CE_AUDIO & ~pause),
+    .wait_n(1'b1),
+    .int_n(~(~SIRQ_N | snd_latch1_ready)),
+    .busrq_n(~BRQ),
+    .m1_n(z80_M1_n),
+    .mreq_n(z80_MREQ_n),
+    .iorq_n(z80_IORQ_n),
+    .rd_n(z80_RD_n),
+    .wr_n(z80_WR_n),
+    .rfsh_n(),
+    .halt_n(),
+    .busak_n(),
     .A(z80_addr),
-    .DI(z80_din),
-    .DO(z80_dout),
-    .NMI_n(m84 ? ~m84_nmi : ~snd_latch2_ready)
+    .di(z80_din),
+    .dout(z80_dout),
+    .nmi_n(m84 ? ~m84_nmi : ~snd_latch2_ready)
 );
 
 jt51 ym2151(

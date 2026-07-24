@@ -282,8 +282,10 @@ uint16_t ParseMraDipDefaults(const char *mraPath)
     if (!def)
         return 0;
 
+    // Separator varies between MRAs: "00,06" or "00 02"
     unsigned b0 = 0, b1 = 0;
-    sscanf(def, "%x,%x", &b0, &b1);
+    if (sscanf(def, "%x ,%x", &b0, &b1) < 2)
+        sscanf(def, "%x %x", &b0, &b1);
     return static_cast<uint16_t>((b1 << 8) | b0);
 }
 
