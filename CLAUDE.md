@@ -1,0 +1,100 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## What this is
+
+An FPGA implementation (SystemVerilog/Verilog/VHDL) of Irem M72, M81, and M84 arcade
+hardware for the **MiSTer** platform. It is a hardware core synthesized with Intel Quartus
+for a Cyclone V, not a software program. Supported titles include R-Type, Ninja Spirit,
+Image Fight, Hammerin' Harry, R-Type II, and others (see `Readme.md`).
+
+## Building
+
+The core is built with **Intel Quartus Prime** (targets Cyclone V `5CSEBA6U23I7`). There is
+no CLI test/lint harness — "building" means synthesizing a `.rbf` bitstream.
+
+- `Arcade-IremM72.qpf` / `Arcade-IremM72.qsf` — main project. Top-level entity is `sys_top`
+  (from the `sys/` MiSTer framework); the core itself is the `emu` module in
+  `Arcade-IremM72.sv`.
+- `Arcade-IremM72-Fast.qsf` — alternate revision with faster/aggressive fitter settings.
+- `files.qip` lists all RTL source files fed to synthesis. **When you add an RTL file you
+  must register it in `files.qip`** (or `pll.qip` / a sub-`.qip`), or Quartus won't compile it.
+- `M72_DEBUG` Verilog macro (commented out in the `.qsf`) enables the DDR trace/debug path
+  (`ddr_debug.sv`) and CPU stall control. It uses DDR and disables `screen_rotate`.
+- Built bitstreams are archived in `releases/`.
+
+`sys/` is the vendored MiSTer framework (HPS I/O, video mixer, PLL reconfig, scaler) — treat
+it as an external dependency; do not modify it when fixing core logic.
+
+## Architecture
+
+The signal flow mirrors the original PCB, and module/signal names deliberately track the
+schematics (`docs/Irem_M72_schematics.pdf`, `docs/Irem_M84_schematics.pdf`) and the Nanao/KNA
+custom-chip reverse engineering.
+
+- **`Arcade-IremM72.sv` (`emu`)** — MiSTer wrapper: clocks/PLL, SDRAM arbitration, HPS I/O
+  (OSD config string `CONF_STR`, DIP switches, controls), ROM download, hiscore, video output.
+  Instantiates the core.
+- **`rtl/m72.v` (`m72`)** — the actual arcade board. Wires together the CPU, video boards,
+  sprite engine, sound, MCU, and interrupt controller. Start here to understand the core.
+- **CPU**: NEC V30 in `rtl/v30/` (VHDL, based on RobertPeip's v30mz). `rtl/pal.sv`
+  (`address_translator`) decodes the CPU address/IO space into region requests and control
+  strobes — this is the memory map.
+- **Video**: `rtl/kna70h015.sv` generates video timing (H/V counters, blanking, interrupts).
+  `rtl/board_b_d.sv` (+ `board_b_d_layer.sv`, `board_b_d_sdram.sv`) is the tilemap/background
+  "B-D board" (layers A/B + palette). `rtl/sprite.sv` is the sprite engine. `rtl/kna91h014.v`
+  is the object/sprite palette; `rtl/kna6034201.v` another KNA custom. Final RGB is mixed at
+  the bottom of `m72.v` (sprite over background priority, `CBLK`).
+- **Sound**: `rtl/sound.sv` — Z80 (`rtl/T80/`) driving YM2151 (`rtl/jt51/`, jotego's core) and
+  a sample/DAC path (`rtl/sample_rom.sv`). M84 vs M72 sound differences are gated by `m84`.
+- **MCU / protection**: `rtl/mcu.sv` + `rtl/mcu_emulator.sv` (8051 core in `rtl/8051/`) emulate
+  the i8751 used by some games (Gallop, Daiku no Gensan). Communicates with the main CPU via
+  `rtl/dualport_mailbox.sv`. `rtl/m72_pic.sv` is the UPD71059 interrupt controller.
+- **Memory**: `rtl/sdram.sv` — 3-channel SDRAM controller (ch1 background, ch2 sprites, ch3
+  multiplexed CPU access + ROM download). Region base addresses and the ROM-load layout live
+  in `rtl/m72_pkg.sv` (`LOAD_REGIONS`, `region_t`, `board_cfg_t`). `rtl/rom.sv` (`rom_loader`)
+  parses the downloaded ROM blob into SDRAM/BRAM regions per the MRA.
+
+### Board configuration
+`board_cfg_t` (in `rtl/m72_pkg.sv`) selects behavior between M72/M81/M84 (`m84`, `memory_map`,
+`main_mculatch`). It is set at ROM-load time from bytes in the MRA file, so a single bitstream
+runs multiple board variants.
+
+### MRA files
+`docs/irem_m72_mra/`, `irem_m84_mra/`, etc. hold the `.mra` XML that tells MiSTer how to
+assemble each game's ROM set (part order, region interleaving, `board_cfg` bytes, DIP
+definitions). Adding/fixing game support usually means editing both RTL region handling and
+the relevant `.mra`.
+
+## Simulation & test ROMs (this `simulator` branch)
+
+- **`sim/`** — a Verilator+ImGui/SDL2 simulator for the core (see `sim/README.md`).
+  Build with `cd sim && make sim` (homebrew verilator + sdl2; capstone optional).
+  Runs games from `roms/` zips via the loader-format MRAs in `releases/` (the MRAs under
+  `docs/` are the old flat format and do NOT work with `rtl/rom.sv`). Headless JSON server
+  mode (`./sim --server`) for scripted testing. The three VHDL CPU cores are used as
+  pre-generated Verilog netlists in `sim/rtl_gen/` (Verilator can't compile VHDL);
+  regenerate with `make netlists` after sourcing `~/oss-cad-suite/environment`.
+  Key sim-vs-hardware notes: `rtl/sdram.sv` channels use edge-detected req + 1-cycle rdy
+  pulse (modeled in `sim/sim_sdram.h`); `ioctl_wr` must pulse one clk_sys cycle per byte.
+
+- **`util/irem_emu`** — a custom **MAME** build (reference emulator) for the Irem hardware,
+  used with `-debug` to compare behavior against the RTL.
+- **`testroms/`** — homebrew test programs (C + asm) that run on the V30. The source and
+  `Makefile` live on the `testrom` branch (`git show testrom:testroms/Makefile`); built
+  artifacts land in `testroms/build/`. Toolchain: `ia16-elf-gcc` / `nasm` / `ia16-elf-objcopy`.
+  Common targets (run from the `testroms` dir): `make` (build), `make run`, `make debug`,
+  `make trace` (run under `irem_emu`), `make mister` (deploy to a MiSTer dev box),
+  `make picorom` (flash a PicoROM cart). `split_rom.py`/`interleave.py` in `util/` split the
+  built binary into the individual ROM chips the MRA expects.
+- **`util/m72_trace_viewer/`** — ImGui (Visual Studio `.sln`) app that visualizes the DDR
+  execution traces captured when the core is built with `M72_DEBUG`. `ddrdbg.py` pulls traces.
+
+## Conventions
+
+- Match the surrounding RTL style: signal and module names follow the schematics and the
+  original chip part numbers (`kna70h015`, `kna91h014`, `board_b_d`), and active-low signals
+  are negated at the boundary (note the `~` on inputs/DIPs in `Arcade-IremM72.sv`). Preserve
+  these names rather than "modernizing" them.
+- `.editorconfig` governs formatting.

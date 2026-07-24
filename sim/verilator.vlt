@@ -1,0 +1,27 @@
+`verilator_config
+
+// Generated VHDL->Verilog netlists (yosys write_verilog output):
+// overlapping casez arms carry priority semantics, benign.
+lint_off -rule CASEOVERLAP -file "*/rtl_gen/*.v"
+lint_off -rule CASEOVERLAP -file "rtl_gen/*.v"
+lint_off -rule UNOPTFLAT   -file "*/rtl_gen/*.v"
+lint_off -rule UNOPTFLAT   -file "rtl_gen/*.v"
+
+// jt51 is third-party verilog
+lint_off -file "*/jt51/*.v"
+
+// Quartus accepts procedural assignment to implicit-wire outputs; the core
+// RTL relies on that. Waive rather than touch synthesis sources.
+lint_off -rule PROCASSWIRE
+
+// By-design patterns in the core RTL:
+lint_off -rule CASEX          // mcu.sv address decode uses casex intentionally
+lint_off -rule MULTIDRIVEN    // dpramv true dual-port RAM writes from both ports
+lint_off -rule PINMISSING     // unused ports intentionally left unconnected
+lint_off -rule IMPLICITSTATIC // netlist/task statics, no functional impact
+lint_off -rule REALCVT        // constant real->int conversions in params
+
+// Make internal storage of the BRAM models public so the C++ harness can
+// inspect/patch RAM contents directly (hex editors, DebugLink).
+public -module "dpramv" -var "ram"
+public -module "dpramv_cen" -var "ram"
