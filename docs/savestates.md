@@ -45,6 +45,28 @@ stamp that round-trips through the file.
 - Env knobs: `M72_STATE_TIMEOUT_TICKS`, `M72_STATE_PROGRESS_TICKS`,
   `M72_STATE_SECTION_TRACE=1` (logs each section during save/restore).
 
+## Generated auto_ss cores (Z80, jt51)
+
+The Z80 (`tv80_auto_ss.sv`) and YM2151 (`jt51_auto_ss.sv`) get their savestate
+logic injected automatically by `util/state_module.py` (jotego's Verilog
+savestate generator, run under `uv`; needs `util/verible_verilog_syntax.py`
+and the `verible-verilog-*` binaries). Regenerate with:
+
+```
+uv run util/state_module.py --generate-csv docs/jt51_mapping.csv \
+    jt51 rtl/jt51_auto_ss.sv rtl/jt51/*.v
+```
+
+Both are wired to the ssbus via `auto_save_adaptor2` in `sound.sv` and are
+compiled in place of the plain cores under `USE_AUTO_SS` (see `files.qip` /
+`sim/Makefile`). The jt51 ROMs (`sinetable`, `explut`, `lfo_lut`) are
+`initial`-populated constants and are correctly excluded (the generator only
+captures registers written with `<=` in an `always` block). Note: `jt51_sh.v`
+was restructured from a genvar-`generate` shift to a module-scope procedural
+`for` so the generator injects its read/restore logic once at module scope
+instead of replicating it per genvar bit (which produced a multidriven
+`auto_ss_data_out`); this matches the `jt12_sh` style the generator handles.
+
 ## FPGA (Arcade-IremM72.sv)
 
 OSD: savestate slot / autoincrement options, `R[43]` save / `R[44]` restore,
@@ -58,10 +80,6 @@ screen-rotation framebuffer through `ddr_mux`.
   other games need — MCU internal/external RAM, the CPU/MCU mailbox, the
   sample player, M84 specifics — is intentionally not saved yet; other games
   will not restore correctly.
-- **jt51 (YM2151) state is not saved.** After a restore, music/SFX are wrong
-  or silent until the sound driver reprograms the chip; if the driver relies
-  on the YM timer IRQ for its tick, sound may stay silent until then.
-  Future work: generate a `jt51_auto_ss` with `util/state_module.py`.
 - **FPGA hardware untested.** The OSD wiring is in place but has not been
   validated on a DE10-Nano yet.
 - **`M72_DEBUG` builds have no savestates** — the DDR pins belong to

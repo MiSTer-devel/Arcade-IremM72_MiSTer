@@ -887,6 +887,7 @@ sound sound(
     .ssbus_ram(ssb[SSIDX_SOUND_RAM]),
     .ssbus_regs(ssb[SSIDX_SOUND_REGS]),
     .ssbus_z80(ssb[SSIDX_Z80]),
+    .ssbus_jt51(ssb[SSIDX_JT51]),
     .ss_restore_active(ss_restore_active)
 );
 

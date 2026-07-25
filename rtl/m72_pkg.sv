@@ -65,7 +65,7 @@ package m72_pkg;
     } video_timing_t;
 
     // Savestate section indices (ssbus chunk ids). R-Type scope: hardware the
-    // game doesn't use (MCU, samples, mailbox, jt51 internals) has no section.
+    // game doesn't use (MCU, samples, mailbox) has no section.
     parameter int SSIDX_GLOBAL        = 0;   // m72.v: sys_flags, CE counters, paused_v/h
     parameter int SSIDX_WORK_RAM      = 1;   // 64K x 16 CPU work RAM
     parameter int SSIDX_V30           = 2;   // 202 x 16 v30_core register file
@@ -84,8 +84,9 @@ package m72_pkg;
     parameter int SSIDX_PAL_OBJ       = 21;  // kna91h014 in m72.v
     parameter int SSIDX_CRTC          = 22;  // kna70h015
     parameter int SSIDX_PIC           = 23;  // m72_pic
-    parameter int SSIDX_VERSION       = 24;  // build stamp
-    parameter int SSIDX_COUNT         = 25;
+    parameter int SSIDX_JT51          = 24;  // jt51_auto_ss via auto_save_adaptor2
+    parameter int SSIDX_VERSION       = 25;  // build stamp
+    parameter int SSIDX_COUNT         = 26;
 
     // DDR window for savestate slots: 4 slots x 4MB from this base
     // (save_state_data hardcodes index * 0x400000, length 0x400000)

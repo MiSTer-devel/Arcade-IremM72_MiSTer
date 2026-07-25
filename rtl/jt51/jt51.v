@@ -74,7 +74,6 @@ jt51_timers u_timers(
 /*verilator tracing_on*/
 
 `ifndef JT51_ONLYTIMERS
-`define YM_TIMER_CTRL 8'h14
 
 wire    [1:0]   rl_I;
 wire    [2:0]   fb_II;

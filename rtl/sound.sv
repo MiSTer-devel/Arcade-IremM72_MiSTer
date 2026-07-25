@@ -71,6 +71,7 @@ module sound (
     ssbus_if.slave ssbus_ram,
     ssbus_if.slave ssbus_regs,
     ssbus_if.slave ssbus_z80,
+    ssbus_if.slave ssbus_jt51,
     input ss_restore_active
 );
 
@@ -241,8 +242,40 @@ tv80s z80(
     .nmi_n(m84 ? ~m84_nmi : ~snd_latch2_ready)
 );
 
+`ifdef USE_AUTO_SS
+wire [31:0] jt51_ss_in, jt51_ss_out;
+wire jt51_ss_wr, jt51_ss_rd, jt51_ss_ack;
+wire [15:0] jt51_ss_state_idx;
+wire [7:0] jt51_ss_device_idx;
+
+auto_save_adaptor2 #(.SS_IDX(SSIDX_JT51)) jt51_ss_adaptor(
+    .clk(CLK_32M),
+    .ssbus(ssbus_jt51),
+    .rd(jt51_ss_rd),
+    .wr(jt51_ss_wr),
+    .ack(jt51_ss_ack),
+    .device_idx(jt51_ss_device_idx),
+    .state_idx(jt51_ss_state_idx),
+    .wr_data(jt51_ss_in),
+    .rd_data(jt51_ss_out)
+);
+`endif
+
 jt51 ym2151(
-    .rst(BRQ | reset),
+`ifdef USE_AUTO_SS
+    .auto_ss_rd(jt51_ss_rd),
+    .auto_ss_wr(jt51_ss_wr),
+    .auto_ss_device_idx(jt51_ss_device_idx),
+    .auto_ss_state_idx(jt51_ss_state_idx),
+    .auto_ss_base_device_idx(8'd0),
+    .auto_ss_data_in(jt51_ss_in),
+    .auto_ss_data_out(jt51_ss_out),
+    .auto_ss_ack(jt51_ss_ack),
+`endif
+    // Hold jt51 out of reset during a savestate restore: BRQ derives from
+    // sys_flags, which is itself being scattered, so a transient reset would
+    // wipe the freshly restored FM state (same guard as the Z80 above).
+    .rst((BRQ | reset) & ~ss_restore_active),
     .clk(CLK_32M),
     .cen(CE_AUDIO & ~pause),
     .cen_p1(CE_AUDIO_P1 & ~pause),

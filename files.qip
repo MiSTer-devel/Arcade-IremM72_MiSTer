@@ -37,17 +37,18 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/v30/v30_eu.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/v30/v30_core.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/v30/v30_bus.sv
 
-set_global_assignment -name QIP_FILE rtl/jt51/jt51.qip
 set_global_assignment -name QIP_FILE rtl/8051/mc8051.qip
 
 if (1) {
     set_global_assignment -name VERILOG_MACRO "USE_AUTO_SS=1"
     set_global_assignment -name SYSTEMVERILOG_FILE rtl/tv80_auto_ss.sv
+    set_global_assignment -name SYSTEMVERILOG_FILE rtl/jt51_auto_ss.sv
 } else {
     set_global_assignment -name VERILOG_FILE rtl/tv80/tv80s.v
     set_global_assignment -name VERILOG_FILE rtl/tv80/tv80_core.v
     set_global_assignment -name VERILOG_FILE rtl/tv80/tv80_alu.v
     set_global_assignment -name VERILOG_FILE rtl/tv80/tv80_mcode.v
     set_global_assignment -name VERILOG_FILE rtl/tv80/tv80_reg.v
+    set_global_assignment -name QIP_FILE rtl/jt51/jt51.qip
 }
 

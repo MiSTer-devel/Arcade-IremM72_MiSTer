@@ -99,11 +99,12 @@ HDL_SRC += ../rtl/dpramv.sv ../rtl/rom.sv ../rtl/jtframe_frac_cen.v
 ifeq ($(USE_AUTO_SS),1)
 VERILATOR_ARGS += -DUSE_AUTO_SS
 HDL_SRC += ../rtl/tv80_auto_ss.sv
+HDL_SRC += ../rtl/jt51_auto_ss.sv
 else
 HDL_SRC += ../rtl/tv80/tv80s.v ../rtl/tv80/tv80_core.v ../rtl/tv80/tv80_alu.v ../rtl/tv80/tv80_mcode.v ../rtl/tv80/tv80_reg.v
+HDL_SRC += $(wildcard ../rtl/jt51/jt51*.v)
 endif
 HDL_SRC += ../sys/iir_filter.v
-HDL_SRC += $(wildcard ../rtl/jt51/jt51*.v)
 HDL_SRC += $(NETLISTS)
 HDL_SRC += sim_top.sv
 HDL_SRC += verilator.vlt
