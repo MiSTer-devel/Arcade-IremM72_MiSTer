@@ -16,6 +16,7 @@ namespace
 bool GameInitHharryb();
 bool GameInitHharryb2();
 bool GameInitTestbed();
+bool GameInitRtype();
 
 struct GameEntry
 {
@@ -35,6 +36,7 @@ const GameEntry gGames[N_GAMES] = {
     /* GAME_HHARRYB  */ {"hharryb",  nullptr, GameInitHharryb, nullptr},
     /* GAME_HHARRYB2 */ {"hharryb2", nullptr, GameInitHharryb2, nullptr},
     /* GAME_TESTBED  */ {"testbed",  nullptr, GameInitTestbed, nullptr},
+    /* GAME_RTYPE    */ {"rtype",    nullptr, GameInitRtype, nullptr},
 };
 // clang-format on
 
@@ -225,6 +227,57 @@ bool GameInitTestbed()
         return false;
 
     return FinishGameLoad(stream, 0x0600);
+}
+
+// R-Type (World): plain M72 board (memory map 0, 256KB CPU window), no MCU,
+// no sample ROM; the Z80 sound program is embedded in the main CPU ROM and
+// copied into the shared sound RAM by the V30.  Region layout mirrors
+// releases/R-Type (World).mra; the zip carries newer MAME file names for the
+// tile ROMs, so those fall back to CRC lookup.
+bool GameInitRtype()
+{
+    gFileSearch.ClearSearchPaths();
+    gFileSearch.AddSearchPath(".");
+    gFileSearch.AddSearchPath(RomDir());
+    gFileSearch.AddSearchPath(RomDir() + "/rtype.zip");
+
+    std::vector<uint8_t> stream;
+    stream.push_back(0x00); // board_cfg: M72, memory_map 0
+
+    AppendRegionHeader(stream, REGION_CPU_ROM, 0x40000);
+    if (!AppendInterleaved(stream, {{{"rt_r-l0-b.3b", 0xa1928df0}}, {{"rt_r-h0-b.1b", 0x591c7754}}}))
+        return false;
+    if (!AppendInterleaved(stream, {{{"rt_r-l1-b.3c", 0x0df3573d}}, {{"rt_r-h1-b.1c", 0xa9d71eca}}}))
+        return false;
+
+    AppendRegionHeader(stream, REGION_SPRITE, 0x60000);
+    if (!AppendInterleaved(stream, {{{"rt_r-00.1h", 0xdad53bc0}},
+                                    {{"rt_r-10.1k", 0xd6a66298}},
+                                    {{"rt_r-20.3h", 0xfc247c8a}},
+                                    {{"rt_r-30.3k", 0xeb02a1cb}}}))
+        return false;
+    if (!AppendInterleaved(stream, {{{"rt_r-01.1j", 0x5e441e7f}},
+                                    {{"rt_r-11.1l", 0x791df4f8}},
+                                    {{"rt_r-21.3j", 0xed793841}},
+                                    {{"rt_r-31.3l", 0x8558355d}}}))
+        return false;
+
+    AppendRegionHeader(stream, REGION_BG_A, 0x20000);
+    if (!AppendInterleaved(stream, {{{"rt_b-a0.ic20", 0x4e212fb0}},
+                                    {{"rt_b-a1.ic22", 0x8a65bdff}},
+                                    {{"rt_b-a2.ic21", 0x5a4ae5b9}},
+                                    {{"rt_b-a3.ic23", 0x73327606}}}))
+        return false;
+
+    AppendRegionHeader(stream, REGION_BG_B, 0x20000);
+    if (!AppendInterleaved(stream, {{{"rt_b-b0.ic26", 0xa7b17491}},
+                                    {{"rt_b-b1.ic27", 0xb9709686}},
+                                    {{"rt_b-b2.ic25", 0x433b229a}},
+                                    {{"rt_b-b3.ic24", 0xad89b072}}}))
+        return false;
+
+    // dip defaults from the MRA <switches default="0c 0a">
+    return FinishGameLoad(stream, 0x0a0c);
 }
 
 // Hammerin' Harry (Playmark bootleg): M84-style main/gfx layout with split

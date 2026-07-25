@@ -12,6 +12,7 @@ enum Game : uint8_t
     GAME_HHARRYB,    // Hammerin' Harry (bootleg) - hand-coded
     GAME_HHARRYB2,   // Hammerin' Harry (bootleg 2) - hand-coded
     GAME_TESTBED,    // testroms/ testbed CPU ROMs on the hharryu board
+    GAME_RTYPE,      // R-Type (World, M72) - via releases MRA
 
     N_GAMES,
 
