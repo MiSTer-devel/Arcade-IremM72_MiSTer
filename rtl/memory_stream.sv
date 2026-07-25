@@ -215,6 +215,9 @@ module memory_stream #(parameter COUNT = 32)
                                 chunk_remaining <= ddr.rdata[31:0];
                                 chunk_width <= ddr.rdata[33:32];
                                 chunk_index <= ddr.rdata[56+CHUNK_BITS-1:56];
+                                // Each chunk's data starts on a fresh 64-bit
+                                // word; reset the word phase (see WRITE_GATHER)
+                                word_counter <= 0;
                                 write_req <= 1;
                                 query_req <= 1;
                                 query_delay <= 0;
@@ -343,6 +346,12 @@ module memory_stream #(parameter COUNT = 32)
                     if (chunk_remaining == 0) begin
                         // Check if we have partially filled buffer to write
                         if (word_counter != 0) begin
+                            // Reset the word phase for the next chunk: without
+                            // this, every chunk after one whose byte size is
+                            // not a multiple of 8 gets gathered with a word
+                            // offset (the restore path had the symmetric bug,
+                            // so round-trips cancelled and hid it).
+                            word_counter <= 0;
                             state <= WRITE_MEM_REQ;
                         end
                         else begin

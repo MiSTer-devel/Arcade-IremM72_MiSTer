@@ -35,6 +35,11 @@ stamp that round-trips through the file.
 
 - `state save` / `state load` protocol methods (and the GUI state window)
   drive the same core handshake and write `states/<game>/NNN.m72state`.
+- File layout: 8-byte slot header, then per-chunk 64-bit header
+  `{index[63:56], width[33:32], count[31:0]}` followed by the packed data
+  (each chunk starts on a fresh 64-bit word), all-FF terminator.  The layout
+  is stable and can be parsed/patched externally — handy for injecting
+  synthetic hardware state (e.g. a hand-built sprite table) during debugging.
 - Debug: `signal.read` names `ss_state_out`, `ss_pause`, `ss_paused`,
   `ss_read`, `ss_write`, `ss_v30_quiet`, `ss_v30_err`, `ss_stream_*`.
 - Env knobs: `M72_STATE_TIMEOUT_TICKS`, `M72_STATE_PROGRESS_TICKS`,

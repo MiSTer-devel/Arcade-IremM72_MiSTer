@@ -114,7 +114,7 @@ dualport_ram_unreg #(.WIDTHAD(9)) ram_l
     .q_b(dma_l)
 );
 
-reg [63:0] objram[128];
+reg [63:0] objram[128] /* verilator public_flat */;
 
 reg [7:0] dma_l, dma_h;
 reg [10:0] dma_counter;
@@ -300,10 +300,17 @@ always_ff @(posedge CLK_96M) begin
             sdr_wait <= 1;
         end
         4: begin
-            line_buffer_in <= deswizzle(sdr_data, obj_flipx);
             if (line_buffer_req != line_buffer_ack)
                 st <= st; // wait
             else begin
+                // Latch the pixel data only at the commit: the line buffer
+                // reads data_in when it *services* the request (up to 16
+                // clocks later), and by then the walker has already fetched
+                // the next column - re-latching every cycle handed columns
+                // the following column's graphics whenever the SDRAM fetch
+                // beat the buffer's drain (rarely on hardware, always with
+                // the sim's fast SDRAM model).
+                line_buffer_in <= deswizzle(sdr_data, obj_flipx);
                 line_buffer_color <= obj_color;
                 line_buffer_x <= obj_org_x + ( 10'd16 * span );
                 line_buffer_req <= ~line_buffer_ack;
