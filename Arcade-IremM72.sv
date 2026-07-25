@@ -497,10 +497,10 @@ wire m_btny2    = btn_y       | joystick_1[7];
 
 //Start/coin
 wire m_start1   = btn_1p_start | joy[8];
-wire m_start2   = btn_2p_start | joy[10];
+wire m_start2   = btn_2p_start | joy[12];
 wire m_coin1    = btn_coin1    | joy[9];
 wire m_coin2    = btn_coin2;
-wire m_pause    = btn_pause    | joy[11];
+wire m_pause    = btn_pause    | joy[10];
 
 //////////////////////////////////////////////////////////////////
 
@@ -690,7 +690,7 @@ savestate_ui #(.INFO_TIMEOUT_BITS(25)) savestate_ui
     .clk            (clk_sys),
     .ps2_key        (ps2_key[10:0]),
     .allow_ss       (1),
-    .joySS          (0),
+    .joySS          (joy[11]),
     .joyRight       (joy[0]),
     .joyLeft        (joy[1]),
     .joyDown        (joy[2]),

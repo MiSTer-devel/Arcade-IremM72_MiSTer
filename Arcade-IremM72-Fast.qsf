@@ -355,3 +355,18 @@ set_global_assignment -name VHDL_INPUT_VERSION VHDL_2008
 set_global_assignment -name FITTER_AGGRESSIVE_ROUTABILITY_OPTIMIZATION NEVER
 set_global_assignment -name ADVANCED_PHYSICAL_OPTIMIZATION OFF
 set_global_assignment -name OPTIMIZE_MULTI_CORNER_TIMING OFF
+
+set_global_assignment -name SEARCH_PATH rtl/v30
+set_global_assignment -name VERILOG_MACRO "USE_AUTO_SS=1"
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/hiscore.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/ram.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/savestates.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/memory_stream.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/ddram.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/savestate_ui.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/v30/v30_ss_pkg.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/v30/v30_biu.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/v30/v30_eu.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/v30/v30_core.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/v30/v30_bus.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/tv80_auto_ss.sv

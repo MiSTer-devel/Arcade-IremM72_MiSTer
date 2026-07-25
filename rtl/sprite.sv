@@ -120,8 +120,22 @@ reg [7:0] dma_l, dma_h;
 reg [10:0] dma_counter;
 wire [9:0] dma_rd_addr = dma_counter[10:1];
 
+// objram must stay inferrable as block RAM, which means one write port. The
+// DMA write and the savestate restore write share it (the DMA is idle
+// whenever the ssbus is here); the two read addresses - the object fetch and
+// the savestate read - are what an M10K pair can already supply.
+reg [7:0] dma_b[6];
+wire ss_objram_wr = ssbus_objram.access(SSIDX_SPRITE_OBJRAM) & ssbus_objram.write;
+wire dma_objram_wr = ~TNSL & (dma_counter[2:0] == 3'b111);
+wire [6:0] objram_waddr = ss_objram_wr ? ssbus_objram.addr[6:0] : dma_counter[10:3];
+wire [63:0] objram_wdata = ss_objram_wr ? ssbus_objram.data :
+    { dma_h, dma_l, dma_b[5], dma_b[4], dma_b[3], dma_b[2], dma_b[1], dma_b[0] };
+
 always_ff @(posedge CLK_32M) begin
-    reg [7:0] b[6];
+    if (ss_objram_wr | dma_objram_wr) objram[objram_waddr] <= objram_wdata;
+end
+
+always_ff @(posedge CLK_32M) begin
     if (DMA_ON & TNSL) begin
         TNSL <= 0;
         dma_counter <= 11'd0;
@@ -130,27 +144,25 @@ always_ff @(posedge CLK_32M) begin
     if (~TNSL) begin
         case (dma_counter[2:0])
         3'b001: begin
-            b[0] <= dma_l;
-            b[1] <= dma_h;
+            dma_b[0] <= dma_l;
+            dma_b[1] <= dma_h;
         end
         3'b011: begin
-            b[2] <= dma_l;
-            b[3] <= dma_h;
+            dma_b[2] <= dma_l;
+            dma_b[3] <= dma_h;
         end
         3'b101: begin
-            b[4] <= dma_l;
-            b[5] <= dma_h;
+            dma_b[4] <= dma_l;
+            dma_b[5] <= dma_h;
         end
-        3'b111: objram[dma_counter[10:3]] <= { dma_h, dma_l, b[5], b[4], b[3], b[2], b[1], b[0] };
+        default: ;
         endcase
 
         dma_counter <= dma_counter + 11'd1;
         if (dma_counter == 11'h3ff) TNSL <= 1;
     end
 
-    // Savestate restore writes (DMA is idle whenever these are active)
-    if (ssbus_objram.access(SSIDX_SPRITE_OBJRAM) & ssbus_objram.write)
-        objram[ssbus_objram.addr[6:0]] <= ssbus_objram.data;
+    // Savestate restore of the DMA state (DMA is idle whenever this is active)
     if (ssbus_regs.access(SSIDX_SPRITE_REGS) & ssbus_regs.write)
         {TNSL, dma_counter} <= ssbus_regs.data[11:0];
 end

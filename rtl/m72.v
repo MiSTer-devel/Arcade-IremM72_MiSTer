@@ -119,6 +119,14 @@ reg paused /* verilator public_flat_rd */ = 0;
 reg [8:0] paused_v;
 reg [9:0] paused_h;
 
+// The GLOBAL savestate section (see below) covers registers owned by three
+// different always blocks. Synthesis will not resolve a register driven from
+// more than one block, so the section decodes its write here and every owner
+// applies the restore itself. Assigned from the ssbus after ssb is declared.
+reg        ss_glb_wr;
+reg [2:0]  ss_glb_addr;
+reg [63:0] ss_glb_data;
+
 // Pause acquisition. A savestate pause additionally requires the V30 BIU to
 // be bus-quiet (no cycle latent in the prefetch/EU pipeline) and the sprite
 // DMA idle (TNSL) so every RAM port the savestate hijacks is inert.
@@ -134,6 +142,15 @@ always @(posedge CLK_32M) begin
         end
     end else if (~pause_rq_any & paused) begin
         paused <= ~(V == paused_v && H == paused_h);
+    end
+
+    // GLOBAL savestate restore of the pause resume point.
+    if (ss_glb_wr) begin
+        case (ss_glb_addr)
+        3'd3: paused_v <= ss_glb_data[8:0];
+        3'd4, 3'd5, 3'd6, 3'd7: paused_h <= ss_glb_data[9:0];
+        default: ;
+        endcase
     end
 end
 
@@ -175,6 +192,17 @@ always @(posedge CLK_32M) begin
         end
 
         ce_mcu <= reset_n ? ce_mcu_nopause : 1'b0;
+    end
+
+    // GLOBAL savestate restore of the CE train. Only reachable while
+    // ss-paused, so it can never collide with the ~paused arm above.
+    if (ss_glb_wr) begin
+        case (ss_glb_addr)
+        3'd1: ce_steady_count <= ss_glb_data[9:0];
+        3'd2: ce_cpu_count <= ss_glb_data[10:0];
+        3'd3: ce_steady_div <= ss_glb_data[10:9];
+        default: ;
+        endcase
     end
 end
 
@@ -397,6 +425,13 @@ ssbus_mux #(.COUNT(SSIDX_COUNT)) ssmux(
     .masters(ssb)
 );
 
+// GLOBAL section write decode, consumed by the blocks that own each register.
+always_comb begin
+    ss_glb_wr   = ssb[SSIDX_GLOBAL].access(SSIDX_GLOBAL) & ssb[SSIDX_GLOBAL].write;
+    ss_glb_addr = ssb[SSIDX_GLOBAL].addr[2:0];
+    ss_glb_data = ssb[SSIDX_GLOBAL].data;
+end
+
 save_state_data save_state_data(
     .clk(CLK_32M),
     .reset(0),
@@ -528,13 +563,8 @@ always_ff @(posedge CLK_32M) begin
             default: ssb[SSIDX_GLOBAL].read_response(SSIDX_GLOBAL, {54'd0, paused_h});
             endcase
         end else if (ssb[SSIDX_GLOBAL].write) begin
-            case (ssb[SSIDX_GLOBAL].addr[2:0])
-            3'd0: sys_flags <= ssb[SSIDX_GLOBAL].data[7:0];
-            3'd1: ce_steady_count <= ssb[SSIDX_GLOBAL].data[9:0];
-            3'd2: ce_cpu_count <= ssb[SSIDX_GLOBAL].data[10:0];
-            3'd3: {ce_steady_div, paused_v} <= ssb[SSIDX_GLOBAL].data[10:0];
-            default: paused_h <= ssb[SSIDX_GLOBAL].data[9:0];
-            endcase
+            // The registers themselves are written by their owning blocks
+            // from the ss_glb_* decode; this block only acks.
             ssb[SSIDX_GLOBAL].write_ack(SSIDX_GLOBAL);
         end
     end
@@ -572,6 +602,7 @@ wire NL = SOFT_NL ^ dip_sw[8];
 // TODO BANK, CBLK, NL
 always @(posedge CLK_32M) begin
     if (IOWR && cpu_mem_addr[7:1] == 7'h01 && cpu_be[0]) sys_flags <= cpu_dout[7:0];
+    else if (ss_glb_wr && ss_glb_addr == 3'd0) sys_flags <= ss_glb_data[7:0];
 end
 
 // mux io and memory reads. The bus is word-aligned so no byte shuffling: the
