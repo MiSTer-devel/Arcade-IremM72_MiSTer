@@ -122,7 +122,6 @@ always @(posedge CLK_32M) begin
     end
 end
 
-reg [1:0] ce_counter_cpu;
 reg ce_cpu, ce_cpu_half, ce_mcu;
 wire ce_mcu_nopause;
 
@@ -134,17 +133,32 @@ wire ce_mcu_nopause;
 // itself is held in reset via reset_n.
 wire cpu_stall = mem_rq_active | cpu_new_sdr_req;
 
+// Steady-rate CPU clock with catch-up (ce_steady mechanism, as in the IGSPGM
+// core): a free-running reference counts the target 8MHz CPU clocks; the CPU
+// counter chases it, issuing CE/CE_HALF phases back-to-back (one per fabric
+// clock, 16MHz effective) whenever it is behind. SDRAM stalls therefore
+// defer CPU cycles instead of losing them, and the average CPU rate stays at
+// exactly 8MHz - the real board has no such stalls. The reference pauses
+// with `paused` so no backlog accumulates across the pause feature.
+reg [1:0] ce_steady_div;
+reg [9:0] ce_steady_count;
+reg [10:0] ce_cpu_count; // [0] selects the CE (0) / CE_HALF (1) phase
+
 always @(posedge CLK_32M) begin
     ce_cpu <= 0;
     ce_cpu_half <= 0;
     ce_mcu <= 0;
 
     if (~paused) begin
-        if (~cpu_stall) begin
-            ce_counter_cpu <= ce_counter_cpu + 2'd1;
-            ce_cpu <= &ce_counter_cpu;             // one CPU clock every 4 fabric clocks
-            ce_cpu_half <= ce_counter_cpu == 2'd1; // 2 fabric clocks after ce_cpu
+        ce_steady_div <= ce_steady_div + 2'd1;
+        if (&ce_steady_div) ce_steady_count <= ce_steady_count + 10'd1;
+
+        if (~cpu_stall && ce_cpu_count[10:1] != ce_steady_count) begin
+            ce_cpu      <= ~ce_cpu_count[0];
+            ce_cpu_half <=  ce_cpu_count[0];
+            ce_cpu_count <= ce_cpu_count + 11'd1;
         end
+
         ce_mcu <= reset_n ? ce_mcu_nopause : 1'b0;
     end
 end

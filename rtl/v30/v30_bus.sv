@@ -7,11 +7,13 @@
 //  code-fetch flag (BS==CODE) so the sim DebugLink can tell prefetch from data
 //  reads.
 //
-//  Timing model (CE-freeze):
-//    ce      : one CLK per 8MHz CPU clock  (advances a T-state)
-//    ce_half : one CLK, 2 fabric clocks after ce (T1 address-latch strobe)
+//  Timing model (CE-freeze with catch-up):
+//    ce      : advances a T-state; 8MHz average rate
+//    ce_half : the T1 address-latch strobe, one fabric clock after each ce
 //  The core is frozen by withholding ce/ce_half while an SDRAM access is
-//  outstanding (m72.v owns that gating). READY is tied high (no Tw).
+//  outstanding, then catches up at one phase per fabric clock (16MHz burst)
+//  until it matches the steady 8MHz reference (m72.v owns that pacing).
+//  READY is tied high (no Tw).
 //
 //  Distilled from nec_test/hdl/rtl/nec_bus.sv T-state tracker (large mode,
 //  minus wait-states / random / capture / power sequencing / harness), and
