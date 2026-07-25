@@ -25,3 +25,6 @@ lint_off -rule REALCVT        // constant real->int conversions in params
 // inspect/patch RAM contents directly (hex editors, DebugLink).
 public -module "dpramv" -var "ram"
 public -module "dpramv_cen" -var "ram"
+public -module "dualport_ram_unreg" -var "ram"
+public -module "dualport_ram_be" -var "ram"
+public -module "singleport_ram" -var "ram"

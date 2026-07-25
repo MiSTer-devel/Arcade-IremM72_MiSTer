@@ -16,6 +16,7 @@
 
 #include "M72.h"
 #include "M72___024root.h"
+#include "M72__Syms.h"
 #include "verilated.h"
 
 #include "vltstd/vpi_user.h"
@@ -128,7 +129,11 @@ ControllerResult<EmptyResult> SimController::Initialize(bool headless)
     gSimCore.Init();
     gFileSearch.AddSearchPath(".");
 
-    mStateManager = new SimState();
+    // Savestate DDR slot window (matches SS_DDR_BASE in rtl/m72_pkg.sv; the
+    // 1MB dump comfortably covers the ~300KB payload of slot 0)
+    constexpr int kStateOffset = 0x3E000000;
+    constexpr int kStateSize = 1 * 1024 * 1024;
+    mStateManager = new SimState(gSimCore.mTop, gSimCore.mDDRMemory.get(), kStateOffset, kStateSize);
 
     if (mHeadless)
     {
@@ -484,6 +489,17 @@ ControllerResult<SignalListResult> SimController::ListSignals() const
     result.mSignals.push_back({"cpu_cs", 16, "alias", "builtin"});
     result.mSignals.push_back({"cpu_ip", 16, "alias", "builtin"});
     result.mSignals.push_back({"cpu_opcode", 8, "alias", "builtin"});
+    result.mSignals.push_back({"ss_state_out", 32, "alias", "builtin"});
+    result.mSignals.push_back({"ss_pause", 1, "alias", "builtin"});
+    result.mSignals.push_back({"ss_paused", 1, "alias", "builtin"});
+    result.mSignals.push_back({"ss_read", 1, "alias", "builtin"});
+    result.mSignals.push_back({"ss_write", 1, "alias", "builtin"});
+    result.mSignals.push_back({"ss_v30_quiet", 1, "alias", "builtin"});
+    result.mSignals.push_back({"ss_v30_err", 1, "alias", "builtin"});
+    result.mSignals.push_back({"ss_stream_state", 32, "alias", "builtin"});
+    result.mSignals.push_back({"ss_stream_chunk_index", 8, "alias", "builtin"});
+    result.mSignals.push_back({"ss_stream_chunk_remaining", 32, "alias", "builtin"});
+    result.mSignals.push_back({"ss_stream_current_addr", 32, "alias", "builtin"});
 
     auto vpiResult = ListSignalsVpi();
     if (!vpiResult.ok)
@@ -665,7 +681,7 @@ ControllerResult<EmptyResult> SimController::SaveState(const std::string &filena
 
     if (!mStateManager->SaveState(filename.c_str()))
     {
-        return ControllerResult<EmptyResult>::Failure("unsupported", SimState::UnsupportedReason());
+        return ControllerResult<EmptyResult>::Failure("save_failed", "state save did not complete (see [sim-state] log)");
     }
     return ControllerResult<EmptyResult>::Success({});
 }
@@ -678,7 +694,7 @@ ControllerResult<EmptyResult> SimController::LoadState(const std::string &filena
 
     if (!mStateManager->RestoreState(filename.c_str()))
     {
-        return ControllerResult<EmptyResult>::Failure("unsupported", SimState::UnsupportedReason());
+        return ControllerResult<EmptyResult>::Failure("load_failed", "state restore did not complete (see [sim-state] log)");
     }
     return ControllerResult<EmptyResult>::Success({});
 }
@@ -893,6 +909,55 @@ ControllerResult<SignalReadResult> SimController::ReadSignalValueBuiltin(const s
     {
         result.mValue = gSimCore.mTop->dbg_cpu_opcode;
         result.mWidth = 8;
+    }
+    else if (signal == "ss_state_out")
+    {
+        result.mValue = gSimCore.mTop->ss_state_out;
+        result.mWidth = 32;
+    }
+    else if (signal == "ss_pause")
+    {
+        result.mValue = gSimCore.mTop->rootp->vlSymsp->TOP__sim_top__m72_inst.ss_pause;
+    }
+    else if (signal == "ss_paused")
+    {
+        result.mValue = gSimCore.mTop->rootp->vlSymsp->TOP__sim_top__m72_inst.paused;
+    }
+    else if (signal == "ss_read")
+    {
+        result.mValue = gSimCore.mTop->rootp->vlSymsp->TOP__sim_top__m72_inst.ss_read;
+    }
+    else if (signal == "ss_write")
+    {
+        result.mValue = gSimCore.mTop->rootp->vlSymsp->TOP__sim_top__m72_inst.ss_write;
+    }
+    else if (signal == "ss_v30_quiet")
+    {
+        result.mValue = gSimCore.mTop->rootp->vlSymsp->TOP__sim_top__m72_inst.v30_ss_quiet;
+    }
+    else if (signal == "ss_v30_err")
+    {
+        result.mValue = gSimCore.mTop->rootp->vlSymsp->TOP__sim_top__m72_inst.v30__DOT__ss_err;
+    }
+    else if (signal == "ss_stream_state")
+    {
+        result.mValue = gSimCore.mTop->rootp->vlSymsp->TOP__sim_top__m72_inst.__PVT__save_state_data__DOT__memory_stream__DOT__state;
+        result.mWidth = 32;
+    }
+    else if (signal == "ss_stream_chunk_index")
+    {
+        result.mValue = gSimCore.mTop->rootp->vlSymsp->TOP__sim_top__m72_inst.__PVT__save_state_data__DOT__memory_stream__DOT__chunk_index;
+        result.mWidth = 8;
+    }
+    else if (signal == "ss_stream_chunk_remaining")
+    {
+        result.mValue = gSimCore.mTop->rootp->vlSymsp->TOP__sim_top__m72_inst.__PVT__save_state_data__DOT__memory_stream__DOT__chunk_remaining;
+        result.mWidth = 32;
+    }
+    else if (signal == "ss_stream_current_addr")
+    {
+        result.mValue = gSimCore.mTop->rootp->vlSymsp->TOP__sim_top__m72_inst.__PVT__save_state_data__DOT__memory_stream__DOT__current_addr;
+        result.mWidth = 32;
     }
     else
     {

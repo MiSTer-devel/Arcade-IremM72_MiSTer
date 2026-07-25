@@ -9,6 +9,13 @@
 
 import m72_pkg::*;
 
+// Sim savestate build stamp (ASCII, mirrors MiSTer's `BUILD_DATE).  The sim
+// has no build_id.v; the Makefile may inject a date via -DSIM_SS_VERSION,
+// else the "SIM000" sentinel is used.
+`ifndef SIM_SS_VERSION
+`define SIM_SS_VERSION 64'("SIM000")
+`endif
+
 module sim_top(
     input             clk_32m,
     input             clk_96m,
@@ -54,6 +61,24 @@ module sim_top(
     output            sdr_ch3_rnw,
     output            sdr_ch3_req,
     input             sdr_ch3_rdy,
+
+    // DDR interface (savestate slot window, serviced by SimDDR)
+    output            ddr_acquire,
+    output     [31:0] ddr_addr,
+    output     [63:0] ddr_wdata,
+    input      [63:0] ddr_rdata,
+    output            ddr_read,
+    output            ddr_write,
+    output      [7:0] ddr_burstcnt,
+    output      [7:0] ddr_byteenable,
+    input             ddr_busy,
+    input             ddr_read_complete,
+
+    // savestate handshake
+    input             ss_do_save,
+    input             ss_do_restore,
+    input       [1:0] ss_index,
+    output      [3:0] ss_state_out,
 
     // IOCTL (index 0 = ROM stream)
     input             ioctl_download,
@@ -142,6 +167,23 @@ rom_loader rom_loader(
 );
 
 ///////////////////////////////////////////////////////////////////////
+// DDR bridge (savestates are the only DDR client in the sim)
+///////////////////////////////////////////////////////////////////////
+
+ddr_if ddr_host();
+
+assign ddr_acquire = ddr_host.acquire;
+assign ddr_addr = ddr_host.addr;
+assign ddr_byteenable = ddr_host.byteenable;
+assign ddr_write = ddr_host.write;
+assign ddr_read = ddr_host.read;
+assign ddr_wdata = ddr_host.wdata;
+assign ddr_burstcnt = ddr_host.burstcnt;
+assign ddr_host.rdata = ddr_rdata;
+assign ddr_host.rdata_ready = ddr_read_complete;
+assign ddr_host.busy = ddr_busy;
+
+///////////////////////////////////////////////////////////////////////
 // Core
 ///////////////////////////////////////////////////////////////////////
 
@@ -156,7 +198,7 @@ assign dbg_cpu_ip = dbg_v30_regs[207:192];
 assign dbg_cpu_opcode = 8'd0;              // opcode export dropped with the VHDL core
 assign dbg_sdr_cpu_code = dbg_sdr_cpu_code_w;
 
-m72 m72_inst(
+m72 #(.SS_VERSION(`SIM_SS_VERSION)) m72_inst(
     .CLK_32M(clk_32m),
     .CLK_96M(clk_96m),
     .ce_pix(ce_pixel),
@@ -218,6 +260,13 @@ m72 m72_inst(
     .bram_wr(bram_wr),
 
     .pause_rq(pause),
+
+    .ddr(ddr_host),
+    .ss_index(ss_index),
+    .ss_do_save(ss_do_save),
+    .ss_do_restore(ss_do_restore),
+    .ss_state_out(ss_state_out),
+
     .ddr_debug_data(ddr_debug_data),
     .dbg_v30_regs(dbg_v30_regs),
     .sdr_cpu_code(dbg_sdr_cpu_code_w),

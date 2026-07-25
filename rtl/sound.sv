@@ -65,7 +65,13 @@ module sound (
     input bram_wr,
     input [7:0] bram_data,
     input [19:0] bram_addr,
-    input bram_cs
+    input bram_cs,
+
+    // savestates
+    ssbus_if.slave ssbus_ram,
+    ssbus_if.slave ssbus_regs,
+    ssbus_if.slave ssbus_z80,
+    input ss_restore_active
 );
 
 
@@ -96,7 +102,26 @@ wire ram_write = (MWR & SDBEN & BE[0]) | (ram_region & ~z80_MREQ_n & ~z80_WR_n);
 wire [15:0] ram_addr_hi = {A[15:1], 1'b1};
 wire ram_write_hi = MWR & SDBEN & BE[1];
 
-dpramv #(.widthad_a(16)) sound_rom_ram
+// Port B has three masters, structurally prioritized: savestate access (only
+// while quiesced) overrides the existing loader/odd-byte mux (the loader in
+// turn only runs during a ROM download, never overlapping runtime accesses).
+wire [15:0] snd_ram_addr_b;
+wire  [7:0] snd_ram_data_b;
+wire        snd_ram_wren_b;
+
+ram_ss_adaptor #(.WIDTH(8), .WIDTHAD(16), .SS_IDX(SSIDX_SOUND_RAM)) sound_ram_ss(
+    .clk(CLK_32M),
+    .wren_in(bram_cs ? bram_wr : ram_write_hi),
+    .addr_in(bram_cs ? bram_addr[15:0] : ram_addr_hi),
+    .data_in(bram_cs ? bram_data : DIN[15:8]),
+    .wren_out(snd_ram_wren_b),
+    .addr_out(snd_ram_addr_b),
+    .data_out(snd_ram_data_b),
+    .q(ram_dout_hi),
+    .ssbus(ssbus_ram)
+);
+
+dualport_ram_unreg #(.WIDTHAD(16)) sound_rom_ram
 (
     .clock_a(CLK_32M),
     .address_a(ram_addr[15:0]),
@@ -105,9 +130,9 @@ dpramv #(.widthad_a(16)) sound_rom_ram
     .data_a(ram_data),
 
     .clock_b(clk_bram),
-    .address_b(bram_cs ? bram_addr[15:0] : ram_addr_hi),
-    .data_b(bram_cs ? bram_data : DIN[15:8]),
-    .wren_b(bram_cs ? bram_wr : ram_write_hi),
+    .address_b(snd_ram_addr_b),
+    .data_b(snd_ram_data_b),
+    .wren_b(snd_ram_wren_b),
     .q_b(ram_dout_hi)
 );
 
@@ -163,19 +188,40 @@ assign snd_io_addr = z80_addr[7:0];
 assign snd_io_req = ~z80_IORQ_n;
 assign snd_io_data = z80_dout;
 
+`ifdef USE_AUTO_SS
+wire [31:0] z80_ss_in, z80_ss_out;
+wire z80_ss_wr, z80_ss_rd, z80_ss_ack;
+wire [15:0] z80_ss_state_idx;
+wire [7:0] z80_ss_device_idx;
+
+auto_save_adaptor2 #(.SS_IDX(SSIDX_Z80)) z80_ss_adaptor(
+    .clk(CLK_32M),
+    .ssbus(ssbus_z80),
+    .rd(z80_ss_rd),
+    .wr(z80_ss_wr),
+    .ack(z80_ss_ack),
+    .device_idx(z80_ss_device_idx),
+    .state_idx(z80_ss_state_idx),
+    .wr_data(z80_ss_in),
+    .rd_data(z80_ss_out)
+);
+`endif
+
 tv80s z80(
 `ifdef USE_AUTO_SS
-    // TODO: wired to auto_save_adaptor2 in the savestate milestone
-    .auto_ss_rd(1'b0),
-    .auto_ss_wr(1'b0),
-    .auto_ss_device_idx(8'd0),
-    .auto_ss_state_idx(16'd0),
+    .auto_ss_rd(z80_ss_rd),
+    .auto_ss_wr(z80_ss_wr),
+    .auto_ss_device_idx(z80_ss_device_idx),
+    .auto_ss_state_idx(z80_ss_state_idx),
     .auto_ss_base_device_idx(8'd0),
-    .auto_ss_data_in(32'd0),
-    .auto_ss_data_out(),
-    .auto_ss_ack(),
+    .auto_ss_data_in(z80_ss_in),
+    .auto_ss_data_out(z80_ss_out),
+    .auto_ss_ack(z80_ss_ack),
 `endif
-    .reset_n(~BRQ & ~reset),
+    // Keep the Z80 out of reset while a savestate restore is in flight so
+    // BRQ/sys_flags transients during the scatter cannot clobber the freshly
+    // written state (tv80's synchronous reset is not cen-gated).
+    .reset_n((~BRQ & ~reset) | ss_restore_active),
     .clk(CLK_32M),
     .cen(CE_AUDIO & ~pause),
     .wait_n(1'b1),
@@ -271,7 +317,38 @@ always @(posedge CLK_32M) begin
             end
         end
     end
+
+    // Savestate restore writes (the block above is frozen by pause)
+    if (ssbus_regs.access(SSIDX_SOUND_REGS) & ssbus_regs.write) begin
+        case (ssbus_regs.addr[2:0])
+        3'd0: snd_latch1 <= ssbus_regs.data[7:0];
+        3'd1: snd_latch2 <= ssbus_regs.data[7:0];
+        3'd2: {snd_latch1_ready, snd_latch2_ready, m84_nmi, z80_IORQ_n_old} <= ssbus_regs.data[3:0];
+        3'd3: nmi_counter <= ssbus_regs.data[11:0];
+        3'd4: sample_addr <= ssbus_regs.data[15:0];
+        default: sample_out <= ssbus_regs.data[7:0];
+        endcase
+    end
 end
 
+// Savestate regs slave: enumeration, reads and acks (writes live above)
+always @(posedge CLK_32M) begin
+    ssbus_regs.setup(SSIDX_SOUND_REGS, 6, 1);
+
+    if (ssbus_regs.access(SSIDX_SOUND_REGS)) begin
+        if (ssbus_regs.write) begin
+            ssbus_regs.write_ack(SSIDX_SOUND_REGS);
+        end else if (ssbus_regs.read) begin
+            case (ssbus_regs.addr[2:0])
+            3'd0: ssbus_regs.read_response(SSIDX_SOUND_REGS, { 56'd0, snd_latch1 });
+            3'd1: ssbus_regs.read_response(SSIDX_SOUND_REGS, { 56'd0, snd_latch2 });
+            3'd2: ssbus_regs.read_response(SSIDX_SOUND_REGS, { 60'd0, snd_latch1_ready, snd_latch2_ready, m84_nmi, z80_IORQ_n_old });
+            3'd3: ssbus_regs.read_response(SSIDX_SOUND_REGS, { 52'd0, nmi_counter });
+            3'd4: ssbus_regs.read_response(SSIDX_SOUND_REGS, { 48'd0, sample_addr });
+            default: ssbus_regs.read_response(SSIDX_SOUND_REGS, { 56'd0, sample_out });
+            endcase
+        end
+    end
+end
 
 endmodule

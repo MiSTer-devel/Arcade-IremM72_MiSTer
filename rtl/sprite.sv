@@ -48,7 +48,13 @@ module sprite (
     input [63:0] sdr_data,
     output [24:0] sdr_addr,
     output sdr_req,
-    input sdr_rdy
+    input sdr_rdy,
+
+    // savestates: pre-DMA buffer RAMs, post-DMA object table, DMA state
+    ssbus_if.slave ssbus_ram_l,
+    ssbus_if.slave ssbus_ram_h,
+    ssbus_if.slave ssbus_objram,
+    ssbus_if.slave ssbus_regs
 );
 
 wire [7:0] dout_h, dout_l;
@@ -56,7 +62,29 @@ wire [7:0] dout_h, dout_l;
 assign DOUT = { dout_h, dout_l };
 assign DOUT_VALID = MRD & BUFDBEN;
 
-dpramv #(.widthad_a(9)) ram_h
+// Savestate access hijacks the DMA read port (B); the quiesce condition
+// guarantees the DMA is idle (TNSL) whenever these are active.
+wire [8:0] ram_addr_b[2];
+wire [7:0] ram_data_b[2];
+wire       ram_wren_b[2];
+
+ram_ss_adaptor #(.WIDTH(8), .WIDTHAD(9), .SS_IDX(SSIDX_SPRITE_RAM_H)) ram_h_ss(
+    .clk(CLK_32M),
+    .wren_in(1'd0), .addr_in(dma_rd_addr[8:0]), .data_in(8'd0),
+    .wren_out(ram_wren_b[1]), .addr_out(ram_addr_b[1]), .data_out(ram_data_b[1]),
+    .q(dma_h),
+    .ssbus(ssbus_ram_h)
+);
+
+ram_ss_adaptor #(.WIDTH(8), .WIDTHAD(9), .SS_IDX(SSIDX_SPRITE_RAM_L)) ram_l_ss(
+    .clk(CLK_32M),
+    .wren_in(1'd0), .addr_in(dma_rd_addr[8:0]), .data_in(8'd0),
+    .wren_out(ram_wren_b[0]), .addr_out(ram_addr_b[0]), .data_out(ram_data_b[0]),
+    .q(dma_l),
+    .ssbus(ssbus_ram_l)
+);
+
+dualport_ram_unreg #(.WIDTHAD(9)) ram_h
 (
     .clock_a(CLK_32M),
     .address_a(A[9:1]),
@@ -65,13 +93,13 @@ dpramv #(.widthad_a(9)) ram_h
     .data_a(DIN[15:8]),
 
     .clock_b(CLK_32M),
-    .address_b(dma_rd_addr),
-    .data_b(),
-    .wren_b(0),
+    .address_b(ram_addr_b[1]),
+    .data_b(ram_data_b[1]),
+    .wren_b(ram_wren_b[1]),
     .q_b(dma_h)
 );
 
-dpramv #(.widthad_a(9)) ram_l
+dualport_ram_unreg #(.WIDTHAD(9)) ram_l
 (
     .clock_a(CLK_32M),
     .address_a(A[9:1]),
@@ -80,9 +108,9 @@ dpramv #(.widthad_a(9)) ram_l
     .data_a(DIN[7:0]),
 
     .clock_b(CLK_32M),
-    .address_b(dma_rd_addr),
-    .data_b(),
-    .wren_b(0),
+    .address_b(ram_addr_b[0]),
+    .data_b(ram_data_b[0]),
+    .wren_b(ram_wren_b[0]),
     .q_b(dma_l)
 );
 
@@ -118,6 +146,48 @@ always_ff @(posedge CLK_32M) begin
 
         dma_counter <= dma_counter + 11'd1;
         if (dma_counter == 11'h3ff) TNSL <= 1;
+    end
+
+    // Savestate restore writes (DMA is idle whenever these are active)
+    if (ssbus_objram.access(SSIDX_SPRITE_OBJRAM) & ssbus_objram.write)
+        objram[ssbus_objram.addr[6:0]] <= ssbus_objram.data;
+    if (ssbus_regs.access(SSIDX_SPRITE_REGS) & ssbus_regs.write)
+        {TNSL, dma_counter} <= ssbus_regs.data[11:0];
+end
+
+// Savestate slaves: post-DMA object table (64-bit entries) and DMA state.
+// Writes live in the DMA block above; these blocks enumerate, read and ack.
+reg [63:0] ss_objram_rdata;
+reg ss_objram_read_delay;
+
+always_ff @(posedge CLK_32M) begin
+    ss_objram_rdata <= objram[ssbus_objram.addr[6:0]];
+
+    ssbus_objram.setup(SSIDX_SPRITE_OBJRAM, 128, 3);
+
+    if (ssbus_objram.access(SSIDX_SPRITE_OBJRAM)) begin
+        if (ssbus_objram.write) begin
+            ssbus_objram.write_ack(SSIDX_SPRITE_OBJRAM);
+        end else if (ssbus_objram.read) begin
+            if (ss_objram_read_delay) begin
+                ssbus_objram.read_response(SSIDX_SPRITE_OBJRAM, ss_objram_rdata);
+            end
+            ss_objram_read_delay <= 1;
+        end
+    end else begin
+        ss_objram_read_delay <= 0;
+    end
+end
+
+always_ff @(posedge CLK_32M) begin
+    ssbus_regs.setup(SSIDX_SPRITE_REGS, 1, 1);
+
+    if (ssbus_regs.access(SSIDX_SPRITE_REGS)) begin
+        if (ssbus_regs.write) begin
+            ssbus_regs.write_ack(SSIDX_SPRITE_REGS);
+        end else if (ssbus_regs.read) begin
+            ssbus_regs.read_response(SSIDX_SPRITE_REGS, { 52'd0, TNSL, dma_counter });
+        end
     end
 end
 

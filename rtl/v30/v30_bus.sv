@@ -20,7 +20,9 @@
 //  the v30_core instantiation in nec_test/hdl/rtl/system_large.sv.
 //============================================================================
 
-module v30_bus (
+module v30_bus #(
+    parameter SS_IDX = -1
+) (
     input             clk,
     input             ce,          // CPU-clock advance strobe (T-state)
     input             ce_half,     // T1 address-latch strobe (2 clks after ce)
@@ -45,8 +47,15 @@ module v30_bus (
     output            int_ack,     // level, held during T3 of the 2nd INTA
 
     // full register file for the sim CPU window (zeros unless V30_BACKDOOR)
-    output    [223:0] dbg_regs
+    output    [223:0] dbg_regs,
+
+    // savestate: streams the core's 202-entry SS register file
+    ssbus_if.slave    ssbus,
+    input             ss_restore_done, // pulse: reset this adapter to bus-idle
+    output            ss_quiet         // core BIU is bus-quiet (safe to freeze)
 );
+
+import v30_ss_pkg::*;
 
 // Bus status codes (8086 S2-S0 compatible)
 localparam bit [2:0] BS_INTA = 3'b000;
@@ -84,6 +93,18 @@ assign dbg_regs = core_dbg_regs;
 assign dbg_regs = 224'd0;
 `endif
 
+// Savestate regfile access.  Contract (v30_core.sv assertions): SS_WE only
+// while CE is withheld (the core is frozen whenever the ssbus is active),
+// exactly one clk per entry, and the 2-deep staging must drain before CE
+// resumes (the m72 controller's post-restore drain covers this).  SS_RDATA
+// is valid 2 clks after SS_ADDR presents.
+wire [8:0]  ss_core_addr = ss_addr_of(int'(ssbus.addr));
+wire [15:0] ss_core_rdata;
+reg  [1:0]  ss_rd_delay;
+reg         ss_wr_done;
+wire        ss_core_we = ssbus.access(SS_IDX) & ssbus.write & ~ss_wr_done;
+wire        ss_err /* verilator public_flat */;
+
 v30_core u_core (
     .CLK        (clk),
     .CE         (ce),
@@ -99,12 +120,12 @@ v30_core u_core (
     .RD_N       (RD_N),
     .UBE_N      (UBE_N),
     .BUSLOCK_N  (),
-    .SS_ADDR    (9'd0),
-    .SS_WDATA   (16'd0),
-    .SS_WE      (1'b0),
-    .SS_RDATA   (),
-    .SS_ERR     (),
-    .SS_BUS_QUIET()
+    .SS_ADDR    (ss_core_addr),
+    .SS_WDATA   (ssbus.data[15:0]),
+    .SS_WE      (ss_core_we),
+    .SS_RDATA   (ss_core_rdata),
+    .SS_ERR     (ss_err),
+    .SS_BUS_QUIET(ss_quiet)
 `ifdef V30_BACKDOOR
     ,
     .bkd_load     (1'b0),
@@ -119,6 +140,31 @@ v30_core u_core (
     .dbg_pend     ()
 `endif
 );
+
+//----------------------------------------------------------------------------
+// Savestate slave: 202 x 16-bit regfile entries streamed via the ssbus.
+// Reads respect the 2-clk SS_ADDR->SS_RDATA staging; writes pulse SS_WE for
+// exactly one clk per entry (ss_wr_done holds it off while the master waits
+// for the ack to propagate through the mux).
+//----------------------------------------------------------------------------
+always_ff @(posedge clk) begin
+    ssbus.setup(SS_IDX, v30_ss_pkg::SS_COUNT, 1);
+
+    if (ssbus.access(SS_IDX)) begin
+        if (ssbus.write) begin
+            ss_wr_done <= 1;
+            ssbus.write_ack(SS_IDX);
+        end else if (ssbus.read) begin
+            ss_rd_delay <= { ss_rd_delay[0], 1'b1 };
+            if (ss_rd_delay[1]) begin
+                ssbus.read_response(SS_IDX, { 48'd0, ss_core_rdata });
+            end
+        end
+    end else begin
+        ss_rd_delay <= 0;
+        ss_wr_done <= 0;
+    end
+end
 
 //----------------------------------------------------------------------------
 // Registered pin samples (mirrors nec_bus: status/data are one clk old at the
@@ -175,7 +221,10 @@ wire read_type  = (bs_q == BS_CODE) || (bs_q == BS_MEMR) ||
 wire write_type = (bs_q == BS_MEMW) || (bs_q == BS_IOW);
 
 always_ff @(posedge clk) begin
-    if (reset) begin
+    if (reset || ss_restore_done) begin
+        // On ss_restore_done the adapter returns to bus-idle: the savestate
+        // quiesce guarantees no cycle was in flight at save time, so every
+        // other adapter register is dead state until the next T1.
         t_state        <= ST_TI;
         lat_type       <= BS_PASV;
         is_read_cycle  <= 1'b0;

@@ -42,10 +42,11 @@ module address_translator
     output bg_a_memrq, // CHARA
     output bg_b_memrq, // CHARA
     output bg_palette_memrq, // CHARA_P
-    
-    output sprite_memrq, // 
+
+    output sprite_memrq, //
     output sprite_palette_memrq, // OBJ_P
     output sound_memrq,
+    output logic work_ram_memrq, // CPU work RAM (block RAM, not SDRAM)
 
     output sprite_dma,
     output [1:0] iset,
@@ -58,11 +59,15 @@ module address_translator
     assign snd_latch1_wr = ~M_IO & wr & ( A[7:1] == 7'h00 ) & bytesel[0];
     assign snd_latch2_wr = (board_cfg.m84) ? 1'b0 : ( ~M_IO & wr & ( A[7:1] == 7'h60 ) & bytesel[0]);
     
+    // Work RAM lives in block RAM (savestate-friendly, no SDRAM stall);
+    // SDRAM (ls245_en) only serves CPU ROM fetches now.
     always_comb begin
+        work_ram_memrq = 0;
+
         case (board_cfg.memory_map)
         0: begin
             casex (A[19:16])
-            4'b010x: begin ls245_en = DBEN & M_IO; writable = 1; sdr_addr = REGION_CPU_RAM.base_addr[24:0] | A[16:0]; end
+            4'b010x: begin ls245_en = 0; writable = 0; sdr_addr = 24'd0; work_ram_memrq = M_IO; end
             4'b00xx: begin ls245_en = DBEN & M_IO; writable = 0; sdr_addr = REGION_CPU_ROM.base_addr[24:0] | A[17:0]; end
             4'b1111: begin ls245_en = DBEN & M_IO; writable = 0; sdr_addr = REGION_CPU_ROM.base_addr[24:0] | A[17:0]; end
             default: begin ls245_en = 0; writable = 0; sdr_addr = 24'd0; end
@@ -70,7 +75,7 @@ module address_translator
         end
         1: begin
             casex (A[19:16])
-            4'b1010: begin ls245_en = DBEN & M_IO; writable = 1; sdr_addr = REGION_CPU_RAM.base_addr[24:0] | A[16:0]; end
+            4'b1010: begin ls245_en = 0; writable = 0; sdr_addr = 24'd0; work_ram_memrq = M_IO; end
             4'b0xxx: begin ls245_en = DBEN & M_IO; writable = 0; sdr_addr = REGION_CPU_ROM.base_addr[24:0] | A[18:0]; end
             4'b1111: begin ls245_en = DBEN & M_IO; writable = 0; sdr_addr = REGION_CPU_ROM.base_addr[24:0] | A[18:0]; end
             default: begin ls245_en = 0; writable = 0; sdr_addr = 24'd0; end
@@ -78,7 +83,7 @@ module address_translator
         end
         2: begin
             casex (A[19:16])
-            4'b100x: begin ls245_en = DBEN & M_IO; writable = 1; sdr_addr = REGION_CPU_RAM.base_addr[24:0] | A[16:0]; end
+            4'b100x: begin ls245_en = 0; writable = 0; sdr_addr = 24'd0; work_ram_memrq = M_IO; end
             4'b0xxx: begin ls245_en = DBEN & M_IO; writable = 0; sdr_addr = REGION_CPU_ROM.base_addr[24:0] | A[18:0]; end
             4'b1111: begin ls245_en = DBEN & M_IO; writable = 0; sdr_addr = REGION_CPU_ROM.base_addr[24:0] | A[18:0]; end
             default: begin ls245_en = 0; writable = 0; sdr_addr = 24'd0; end
@@ -87,7 +92,7 @@ module address_translator
 
         3,4: begin
             casex (A[19:16])
-            4'b1110: begin ls245_en = DBEN & M_IO; writable = 1; sdr_addr = REGION_CPU_RAM.base_addr[24:0] | A[16:0]; end
+            4'b1110: begin ls245_en = 0; writable = 0; sdr_addr = 24'd0; work_ram_memrq = M_IO; end
             4'b0xxx: begin ls245_en = DBEN & M_IO; writable = 0; sdr_addr = REGION_CPU_ROM.base_addr[24:0] | A[18:0]; end
             4'b1111: begin ls245_en = DBEN & M_IO; writable = 0; sdr_addr = REGION_CPU_ROM.base_addr[24:0] | A[18:0]; end
             default: begin ls245_en = 0; writable = 0; sdr_addr = 24'd0; end
@@ -99,7 +104,7 @@ module address_translator
             writable = 0;
             sdr_addr = 0;
         end
-            
+
         endcase
     end
 

@@ -52,9 +52,14 @@ custom-chip reverse engineering.
   the i8751 used by some games (Gallop, Daiku no Gensan). Communicates with the main CPU via
   `rtl/dualport_mailbox.sv`. `rtl/m72_pic.sv` is the UPD71059 interrupt controller.
 - **Memory**: `rtl/sdram.sv` — 3-channel SDRAM controller (ch1 background, ch2 sprites, ch3
-  multiplexed CPU access + ROM download). Region base addresses and the ROM-load layout live
-  in `rtl/m72_pkg.sv` (`LOAD_REGIONS`, `region_t`, `board_cfg_t`). `rtl/rom.sv` (`rom_loader`)
-  parses the downloaded ROM blob into SDRAM/BRAM regions per the MRA.
+  CPU ROM fetches + ROM download). CPU work RAM is a 64Kx16 block RAM in `rtl/m72.v`
+  (`work_ram`; the hiscore module reads it via port B). Region base addresses and the
+  ROM-load layout live in `rtl/m72_pkg.sv` (`LOAD_REGIONS`, `region_t`, `board_cfg_t`).
+  `rtl/rom.sv` (`rom_loader`) parses the downloaded ROM blob into SDRAM/BRAM regions per
+  the MRA.
+- **Savestates**: ssbus/DDR-streaming architecture from Arcade-IGSPGM (`rtl/savestates.sv`,
+  `rtl/memory_stream.sv`, controller FSM + section map in `rtl/m72.v`/`rtl/m72_pkg.sv`).
+  R-Type only for now; see `docs/savestates.md` for the design and known gaps.
 
 ### Board configuration
 `board_cfg_t` (in `rtl/m72_pkg.sv`) selects behavior between M72/M81/M84 (`m84`, `memory_map`,

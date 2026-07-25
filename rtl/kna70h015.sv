@@ -18,7 +18,9 @@
 //  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 //============================================================================
 
-module kna70h015 (
+module kna70h015 #(
+    parameter SS_IDX = -1
+) (
     input CLK_32M,
 
     input CE_PIX,
@@ -45,7 +47,9 @@ module kna70h015 (
     output HS,
     output VS,
 
-    input video_50hz
+    input video_50hz,
+
+    ssbus_if.slave ssbus
 );
 
 
@@ -87,19 +91,48 @@ V.Sync Pulse     = 384us (6)
 */
 
 always @(posedge CLK_32M) begin
-    if (iset[1]) h_int_line[8] <= iset_data[8];
-    if (iset[0]) h_int_line[7:0] <= iset_data[7:0];
+    // Savestate restore writes take priority for the one clock they land on;
+    // the counters free-run during pause, so the write must win outright.
+    if (ssbus.access(SS_IDX) & ssbus.write) begin
+        case (ssbus.addr[1:0])
+        2'd0: v_count <= ssbus.data[8:0];
+        2'd1: h_count <= ssbus.data[9:0];
+        2'd2: h_int_line <= ssbus.data[8:0];
+        default: int_d_latch <= ssbus.data[0];
+        endcase
+    end else begin
+        if (iset[1]) h_int_line[8] <= iset_data[8];
+        if (iset[0]) h_int_line[7:0] <= iset_data[7:0];
 
-    if (CE_PIX) begin
-        h_count <= h_count + 10'd1;
-        if (CLD) begin
-            h_count <= (S24H ? 10'h0c0 : 10'h100);
-            v_count <= v_count + 9'd1;
+        if (CE_PIX) begin
+            h_count <= h_count + 10'd1;
+            if (CLD) begin
+                h_count <= (S24H ? 10'h0c0 : 10'h100);
+                v_count <= v_count + 9'd1;
+            end
+
+            if (h_count[1]) int_d_latch <= INT_D;
+
+            if (v_count == (S24H ? 9'h1e1 : 9'h18d)) v_count <= (S24H ? 9'h01e : (video_50hz ? 9'h056 : 9'h072));
         end
+    end
+end
 
-        if (h_count[1]) int_d_latch <= INT_D;
+// Savestate slave: enumeration, reads and acks (writes live above)
+always @(posedge CLK_32M) begin
+    ssbus.setup(SS_IDX, 4, 1);
 
-        if (v_count == (S24H ? 9'h1e1 : 9'h18d)) v_count <= (S24H ? 9'h01e : (video_50hz ? 9'h056 : 9'h072));
+    if (ssbus.access(SS_IDX)) begin
+        if (ssbus.write) begin
+            ssbus.write_ack(SS_IDX);
+        end else if (ssbus.read) begin
+            case (ssbus.addr[1:0])
+            2'd0: ssbus.read_response(SS_IDX, { 55'd0, v_count });
+            2'd1: ssbus.read_response(SS_IDX, { 54'd0, h_count });
+            2'd2: ssbus.read_response(SS_IDX, { 55'd0, h_int_line });
+            default: ssbus.read_response(SS_IDX, { 63'd0, int_d_latch });
+            endcase
+        end
     end
 end
 

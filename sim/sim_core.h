@@ -14,6 +14,7 @@ class VerilatedContext;
 class M72;
 class VerilatedFstC;
 class SimSDRAM;
+class SimDDR;
 class SimVideo;
 class SimAudioCapture;
 
@@ -65,6 +66,7 @@ class SimCore
     M72 *mTop;
     std::unique_ptr<SimVideo> mVideo;
     std::unique_ptr<SimSDRAM> mSDRAM;
+    std::unique_ptr<SimDDR> mDDRMemory; // savestate slot window
     std::unique_ptr<SimAudioCapture> mAudioCapture;
 
     // Simulation state

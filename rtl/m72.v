@@ -20,7 +20,9 @@
 
 import m72_pkg::*;
 
-module m72 (
+module m72 #(
+    parameter [63:0] SS_VERSION = 64'd0
+) (
     input CLK_32M,
     input CLK_96M,
 
@@ -53,6 +55,13 @@ module m72 (
     input [15:0] dip_sw,
 
     input pause_rq,
+
+    // savestates: DDR slot window + host handshake
+    ddr_if.to_host ddr,
+    input [1:0] ss_index,
+    input ss_do_save,
+    input ss_do_restore,
+    output [3:0] ss_state_out,
 
     output [24:0] sdr_sprite_addr,
     input [63:0] sdr_sprite_dout,
@@ -106,18 +115,24 @@ module m72 (
 );
 
 // Divide 32Mhz clock by 4 for pixel clock
-reg paused = 0;
+reg paused /* verilator public_flat_rd */ = 0;
 reg [8:0] paused_v;
 reg [9:0] paused_h;
 
+// Pause acquisition. A savestate pause additionally requires the V30 BIU to
+// be bus-quiet (no cycle latent in the prefetch/EU pipeline) and the sprite
+// DMA idle (TNSL) so every RAM port the savestate hijacks is inert.
+wire pause_rq_any = pause_rq | ss_pause;
+wire ss_quiesced = v30_ss_quiet & TNSL;
+
 always @(posedge CLK_32M) begin
-    if (pause_rq & ~paused) begin
-        if (~ls245_en & ~DBEN & ~mem_rq_active) begin
+    if (pause_rq_any & ~paused) begin
+        if (~ls245_en & ~DBEN & ~mem_rq_active & (~ss_pause | ss_quiesced)) begin
             paused <= 1;
             paused_v <= V;
             paused_h <= H;
         end
-    end else if (~pause_rq & paused) begin
+    end else if (~pause_rq_any & paused) begin
         paused <= ~(V == paused_v && H == paused_h);
     end
 end
@@ -226,6 +241,7 @@ wire bg_palette_memrq;
 wire sprite_memrq;
 wire sprite_palette_memrq;
 wire sound_memrq;
+wire work_ram_memrq;
 
 reg mem_rq_active = 0;
 assign sdr_cpu_mem_rq = mem_rq_active;
@@ -236,6 +252,8 @@ wire cpu_new_sdr_req = ls245_en &&
     ((mem_rd & ~cpu_mem_read_lat) || (mem_wr & ~cpu_mem_write_lat));
 
 reg b_d_dout_valid_lat, obj_pal_dout_valid_lat, sound_dout_valid_lat, sprite_dout_valid_lat;
+reg work_ram_dout_valid_lat;
+wire work_ram_dout_valid = MRD & work_ram_memrq;
 
 always @(posedge CLK_32M or negedge reset_n)
 begin
@@ -244,6 +262,7 @@ begin
         obj_pal_dout_valid_lat <= 0;
         sound_dout_valid_lat <= 0;
         sprite_dout_valid_lat <= 0;
+        work_ram_dout_valid_lat <= 0;
     end else begin
         cpu_mem_read_lat <= mem_rd;
         cpu_mem_write_lat <= mem_wr;
@@ -254,13 +273,12 @@ begin
         obj_pal_dout_valid_lat <= obj_pal_dout_valid;
         sound_dout_valid_lat <= sound_dout_valid;
         sprite_dout_valid_lat <= sprite_dout_valid;
+        work_ram_dout_valid_lat <= work_ram_dout_valid;
     end
 end
 
 reg sdr_cpu_rq, sdr_cpu_ack, sdr_cpu_rq2;
-reg sdr_hs_req_active;
 
-reg [16:0] hs_address2;
 always_ff @(posedge CLK_96M) begin
     sdr_cpu_req <= 0;
     if (sdr_cpu_rdy) sdr_cpu_ack <= sdr_cpu_rq;
@@ -270,12 +288,12 @@ always_ff @(posedge CLK_96M) begin
     end
 end
 
-
+// SDRAM ch3 serves CPU ROM fetches only; work RAM (and the hiscore path
+// into it) lives in block RAM below.
 always_ff @(posedge CLK_32M or negedge reset_n) begin
     if (!reset_n) begin
         mem_rq_active <= 0;
     end else begin
-        hs_data_ready <= 0;
         if (!mem_rq_active) begin
             if (ls245_en && ((mem_rd & ~cpu_mem_read_lat) || (mem_wr & ~cpu_mem_write_lat))) begin // sdram request
                 sdr_cpu_wr_sel <= 2'b00;
@@ -287,29 +305,251 @@ always_ff @(posedge CLK_32M or negedge reset_n) begin
                 end
                 sdr_cpu_rq <= ~sdr_cpu_rq;
                 mem_rq_active <= 1;
-              end else if ((hs_read_enable & ~hs_mem_read_lat) || (hs_write_enable & ~hs_mem_write_lat)) begin
-                sdr_cpu_wr_sel <= 2'b00;
-                sdr_cpu_addr <= REGION_CPU_RAM.base_addr[24:0] | hs_address[16:0];
-                if (hs_mem_write) begin
-                  sdr_cpu_wr_sel <= {hs_address[0], ~hs_address[0]};
-                  sdr_cpu_din <= {hs_data_in, hs_data_in};
-                end
-                sdr_cpu_rq <= ~sdr_cpu_rq;
-                hs_address2 <= hs_address;
-                mem_rq_active <= 1;
-                sdr_hs_req_active <= 1; 
               end
         end else if (sdr_cpu_rq == sdr_cpu_ack) begin
-            if (sdr_hs_req_active) begin
-              hs_data_out <= hs_address[0] ? sdr_cpu_dout[15:8] : sdr_cpu_dout[7:0];
-              mem_rq_active <= 0;
-              sdr_hs_req_active <= 0;
-              hs_data_ready <= 1; 
-            end else begin
-              cpu_ram_rom_data <= sdr_cpu_dout;
-              mem_rq_active <= 0;
-            end
+            cpu_ram_rom_data <= sdr_cpu_dout;
+            mem_rq_active <= 0;
+        end
+    end
+end
 
+// CPU work RAM: 64Kx16 block RAM covering the full 128KB window every memory
+// map decodes (rtype uses 0x40000-0x43fff of the 0x40000-0x5ffff window).
+// Port A is the CPU; port B serves the hiscore module (only active while the
+// core is paused) behind the savestate adaptor (only active while savestate-
+// quiesced), so the two secondary masters never contend.
+wire [15:0] work_ram_dout;
+wire [15:0] work_ram_q_b;
+
+wire        work_ram_wren_b;
+wire [1:0]  work_ram_be_b;
+wire [15:0] work_ram_addr_b;
+wire [15:0] work_ram_data_b;
+
+ram_be_ss_adaptor #(.WIDTHAD(16), .SS_IDX(SSIDX_WORK_RAM)) work_ram_ss(
+    .clk(CLK_32M),
+
+    .wren_in(hs_write_enable),
+    .byteena_in({hs_address[0], ~hs_address[0]}),
+    .addr_in(hs_address[16:1]),
+    .data_in({hs_data_in, hs_data_in}),
+
+    .wren_out(work_ram_wren_b),
+    .byteena_out(work_ram_be_b),
+    .addr_out(work_ram_addr_b),
+    .data_out(work_ram_data_b),
+
+    .q(work_ram_q_b),
+
+    .ssbus(ssb[SSIDX_WORK_RAM])
+);
+
+dualport_ram_be #(.BYTES(2), .WIDTHAD(16)) work_ram(
+    .clock_a(CLK_32M),
+    .wren_a(MWR & work_ram_memrq),
+    .byteena_a(cpu_be),
+    .address_a(cpu_mem_addr[16:1]),
+    .data_a(cpu_dout),
+    .q_a(work_ram_dout),
+
+    .clock_b(CLK_32M),
+    .wren_b(work_ram_wren_b),
+    .byteena_b(work_ram_be_b),
+    .address_b(work_ram_addr_b),
+    .data_b(work_ram_data_b),
+    .q_b(work_ram_q_b)
+);
+
+// Hiscore access completion: the BRAM read is valid one clock after the
+// address latch; answer (and ack writes) two clocks after the enable edge.
+// The hiscore module holds its enables until hs_data_ready pulses.
+reg [1:0] hs_pipe;
+always_ff @(posedge CLK_32M) begin
+    hs_data_ready <= 0;
+    hs_pipe <= {hs_pipe[0], 1'b0};
+    if ((hs_read_enable & ~hs_mem_read_lat) || (hs_write_enable & ~hs_mem_write_lat))
+        hs_pipe[0] <= 1;
+    if (hs_pipe[1]) begin
+        hs_data_out <= hs_address[0] ? work_ram_q_b[15:8] : work_ram_q_b[7:0];
+        hs_data_ready <= 1;
+    end
+end
+
+//////////////////////////////////
+//// SAVESTATES
+//
+// ssbus fabric: memory_stream (in save_state_data) gathers/scatters chunk
+// data between the DDR slot window and the per-section slaves below.  The
+// controller FSM quiesces the core via the pause mechanism (plus V30
+// bus-quiet and sprite-DMA-idle terms), then hands the streamer the bus.
+
+reg ss_write /* verilator public_flat_rd */ = 0;
+reg ss_read /* verilator public_flat_rd */ = 0;
+wire ss_busy;
+reg [63:0] ss_restored_version /* verilator public_flat */ = 0;
+
+ssbus_if ssbus();
+ssbus_if ssb[SSIDX_COUNT]();
+
+ssbus_mux #(.COUNT(SSIDX_COUNT)) ssmux(
+    .clk(CLK_32M),
+    .slave(ssbus),
+    .masters(ssb)
+);
+
+save_state_data save_state_data(
+    .clk(CLK_32M),
+    .reset(0),
+
+    .ddr(ddr),
+
+    .index(ss_index),
+    .read_start(ss_read),
+    .write_start(ss_write),
+    .busy(ss_busy),
+
+    .ssbus(ssbus)
+);
+
+typedef enum bit [3:0] {
+    SST_IDLE               = 4'd0,
+    SST_SAVE_WAIT_PAUSE    = 4'd1,
+    SST_SAVE_SETTLE        = 4'd2,
+    SST_SAVE_WAIT_WRITE    = 4'd3,
+    SST_RESTORE_WAIT_PAUSE = 4'd6,
+    SST_RESTORE_WAIT_READ  = 4'd7,
+    SST_RESTORE_DRAIN      = 4'd8
+} ss_state_t;
+
+ss_state_t ss_state = SST_IDLE;
+assign ss_state_out = ss_state;
+
+logic ss_pause /* verilator public_flat_rd */;
+logic ss_restore_active;
+reg ss_restore_done;   // 1-clk pulse late in the drain: adapters reset to idle
+reg ss_restore_hold;   // restore start -> full unpause: gates layer replay
+reg [2:0] ss_counter;
+
+wire v30_ss_quiet /* verilator public_flat_rd */;
+wire ss_paused = ss_pause & paused;
+
+always_comb begin
+    ss_pause = 1;
+    ss_restore_active = 0;
+
+    case (ss_state)
+        SST_IDLE: ss_pause = 0;
+
+        SST_RESTORE_WAIT_PAUSE,
+        SST_RESTORE_WAIT_READ,
+        SST_RESTORE_DRAIN: ss_restore_active = 1;
+
+        default: begin end
+    endcase
+end
+
+always_ff @(posedge CLK_32M) begin
+    ss_restore_done <= 0;
+
+    // Hold the restore gate from restore start until the core fully resumes
+    // (the beam-match unpause happens after the FSM returns to IDLE).
+    if (ss_restore_active) ss_restore_hold <= 1;
+    else if (~paused) ss_restore_hold <= 0;
+
+    case (ss_state)
+        SST_IDLE: begin
+            if (ss_do_save) ss_state <= SST_SAVE_WAIT_PAUSE;
+            if (ss_do_restore) ss_state <= SST_RESTORE_WAIT_PAUSE;
+        end
+
+        SST_SAVE_WAIT_PAUSE: begin
+            ss_counter <= 0;
+            if (ss_paused) ss_state <= SST_SAVE_SETTLE;
+        end
+
+        // Let the *_dout_valid_lat / hs pipes clear before the streamer
+        // starts hijacking RAM ports.
+        SST_SAVE_SETTLE: begin
+            ss_counter <= ss_counter + 3'd1;
+            if (&ss_counter) begin
+                ss_write <= 1;
+                ss_state <= SST_SAVE_WAIT_WRITE;
+            end
+        end
+
+        SST_SAVE_WAIT_WRITE: begin
+            if (ss_busy & ss_write) begin
+                ss_write <= 0;
+            end else if (~ss_busy & ~ss_write) begin
+                ss_state <= SST_IDLE;
+            end
+        end
+
+        SST_RESTORE_WAIT_PAUSE: begin
+            ss_counter <= 0;
+            if (ss_paused) begin
+                ss_read <= 1;
+                ss_state <= SST_RESTORE_WAIT_READ;
+            end
+        end
+
+        SST_RESTORE_WAIT_READ: begin
+            if (ss_busy & ss_read) begin
+                ss_read <= 0;
+            end else if (~ss_busy & ~ss_read) begin
+                ss_state <= SST_RESTORE_DRAIN;
+            end
+        end
+
+        // Drain the V30 SS write staging (and ssbus mux latency) before CE
+        // can resume, and reset the bus adapters to idle.
+        SST_RESTORE_DRAIN: begin
+            ss_counter <= ss_counter + 3'd1;
+            if (ss_counter == 3'd5) ss_restore_done <= 1;
+            if (&ss_counter) ss_state <= SST_IDLE;
+        end
+
+        default: ss_state <= SST_IDLE;
+    endcase
+end
+
+// GLOBAL section: sys_flags, the CE-train counters and the pause resume
+// point.  All owner blocks are provably quiescent while ss-paused, so the
+// restore writes here cannot race them.
+always_ff @(posedge CLK_32M) begin
+    ssb[SSIDX_GLOBAL].setup(SSIDX_GLOBAL, 5, 1);
+    if (ssb[SSIDX_GLOBAL].access(SSIDX_GLOBAL)) begin
+        if (ssb[SSIDX_GLOBAL].read) begin
+            case (ssb[SSIDX_GLOBAL].addr[2:0])
+            3'd0: ssb[SSIDX_GLOBAL].read_response(SSIDX_GLOBAL, {56'd0, sys_flags});
+            3'd1: ssb[SSIDX_GLOBAL].read_response(SSIDX_GLOBAL, {54'd0, ce_steady_count});
+            3'd2: ssb[SSIDX_GLOBAL].read_response(SSIDX_GLOBAL, {53'd0, ce_cpu_count});
+            3'd3: ssb[SSIDX_GLOBAL].read_response(SSIDX_GLOBAL, {53'd0, ce_steady_div, paused_v});
+            default: ssb[SSIDX_GLOBAL].read_response(SSIDX_GLOBAL, {54'd0, paused_h});
+            endcase
+        end else if (ssb[SSIDX_GLOBAL].write) begin
+            case (ssb[SSIDX_GLOBAL].addr[2:0])
+            3'd0: sys_flags <= ssb[SSIDX_GLOBAL].data[7:0];
+            3'd1: ce_steady_count <= ssb[SSIDX_GLOBAL].data[9:0];
+            3'd2: ce_cpu_count <= ssb[SSIDX_GLOBAL].data[10:0];
+            3'd3: {ce_steady_div, paused_v} <= ssb[SSIDX_GLOBAL].data[10:0];
+            default: paused_h <= ssb[SSIDX_GLOBAL].data[9:0];
+            endcase
+            ssb[SSIDX_GLOBAL].write_ack(SSIDX_GLOBAL);
+        end
+    end
+end
+
+// VERSION section: build stamp round-trips through the state file so the sim
+// can report which build produced a restored state.
+always_ff @(posedge CLK_32M) begin
+    ssb[SSIDX_VERSION].setup(SSIDX_VERSION, 1, 3); // 1 x 64-bit value (ASCII)
+    if (ssb[SSIDX_VERSION].access(SSIDX_VERSION)) begin
+        if (ssb[SSIDX_VERSION].read) begin
+            ssb[SSIDX_VERSION].read_response(SSIDX_VERSION, SS_VERSION);
+        end else if (ssb[SSIDX_VERSION].write) begin
+            ss_restored_version <= ssb[SSIDX_VERSION].data[63:0];
+            ssb[SSIDX_VERSION].write_ack(SSIDX_VERSION);
         end
     end
 end
@@ -344,6 +584,7 @@ always_comb begin
     else if (obj_pal_dout_valid_lat) d16 = obj_pal_dout;
     else if (sound_dout_valid_lat) d16 = sound_dout;
     else if (sprite_dout_valid_lat) d16 = sprite_dout;
+    else if (work_ram_dout_valid_lat) d16 = work_ram_dout;
     else if (cpu_mem_addr[19:16] == 4'hb) d16 = cpu_shared_ram_dout;
     else d16 = cpu_ram_rom_data;
 
@@ -357,11 +598,15 @@ always_comb begin
     cpu_din = (IORD | IOWR) ? io16 : d16;
 end
 
-v30_bus v30(
+v30_bus #(.SS_IDX(SSIDX_V30)) v30(
     .clk(CLK_32M),
     .ce(ce_cpu),
     .ce_half(ce_cpu_half),
     .reset(~reset_n),
+
+    .ssbus(ssb[SSIDX_V30]),
+    .ss_restore_done(ss_restore_done),
+    .ss_quiet(v30_ss_quiet),
 
     .cpu_addr(cpu_mem_addr),
     .cpu_be(cpu_be),
@@ -411,6 +656,7 @@ address_translator address_translator(
     .sprite_memrq(sprite_memrq),
     .sprite_palette_memrq(sprite_palette_memrq),
     .sound_memrq(sound_memrq),
+    .work_ram_memrq(work_ram_memrq),
 
     .sprite_dma(sprite_dma),
     .iset(iset),
@@ -423,7 +669,7 @@ address_translator address_translator(
 wire int_req, int_ack;
 wire [7:0] int_vector;
 
-m72_pic m72_pic(
+m72_pic #(.SS_IDX(SSIDX_PIC)) m72_pic(
     .clk(CLK_32M),
     .ce(ce_cpu),
     .reset(~reset_n),
@@ -439,7 +685,9 @@ m72_pic m72_pic(
     .int_vector(int_vector),
     .int_ack(int_ack),
 
-    .intp({5'd0, HINT, 1'b0, VBLK})
+    .intp({5'd0, HINT, 1'b0, VBLK}),
+
+    .ssbus(ssb[SSIDX_PIC])
 );
 
 wire [8:0] VE, V;
@@ -452,7 +700,7 @@ assign HBlank = HBLK;
 assign VSync = VS;
 assign VBlank = VBLK;
 
-kna70h015 kna70h015(
+kna70h015 #(.SS_IDX(SSIDX_CRTC)) kna70h015(
     .CLK_32M(CLK_32M),
 
     .CE_PIX(ce_pix),
@@ -476,7 +724,9 @@ kna70h015 kna70h015(
     .HS(HS),
     .VS(VS),
 
-    .video_50hz(video_timing == VIDEO_50HZ)
+    .video_50hz(video_timing == VIDEO_50HZ),
+
+    .ssbus(ssb[SSIDX_CRTC])
 );
 
 wire [15:0] b_d_dout;
@@ -532,7 +782,20 @@ board_b_d board_b_d(
     .en_layer_b(en_layer_b),
     .en_palette(en_layer_palette),
 
-    .m84(m84)
+    .m84(m84),
+
+    .ssbus_a_ram0(ssb[SSIDX_LAYER_A_RAM0 + 0]),
+    .ssbus_a_ram1(ssb[SSIDX_LAYER_A_RAM0 + 1]),
+    .ssbus_a_ram2(ssb[SSIDX_LAYER_A_RAM0 + 2]),
+    .ssbus_a_ram3(ssb[SSIDX_LAYER_A_RAM0 + 3]),
+    .ssbus_a_regs(ssb[SSIDX_LAYER_A_REGS]),
+    .ssbus_b_ram0(ssb[SSIDX_LAYER_B_RAM0 + 0]),
+    .ssbus_b_ram1(ssb[SSIDX_LAYER_B_RAM0 + 1]),
+    .ssbus_b_ram2(ssb[SSIDX_LAYER_B_RAM0 + 2]),
+    .ssbus_b_ram3(ssb[SSIDX_LAYER_B_RAM0 + 3]),
+    .ssbus_b_regs(ssb[SSIDX_LAYER_B_REGS]),
+    .ssbus_palette(ssb[SSIDX_PAL_BG]),
+    .ss_restore(ss_restore_hold)
 );
 
 
@@ -588,7 +851,12 @@ sound sound(
     .bram_wr(bram_wr),
     .bram_data(bram_data),
     .bram_addr(bram_addr),
-    .bram_cs(bram_cs[4])
+    .bram_cs(bram_cs[4]),
+
+    .ssbus_ram(ssb[SSIDX_SOUND_RAM]),
+    .ssbus_regs(ssb[SSIDX_SOUND_REGS]),
+    .ssbus_z80(ssb[SSIDX_Z80]),
+    .ss_restore_active(ss_restore_active)
 );
 
 // Temp A-C board palette
@@ -597,7 +865,7 @@ wire obj_pal_dout_valid;
 
 
 wire [4:0] obj_pal_r, obj_pal_g, obj_pal_b;
-kna91h014 obj_pal(
+kna91h014 #(.SS_IDX(SSIDX_PAL_OBJ)) obj_pal(
     .CLK_32M(CLK_32M),
 
     .G(sprite_palette_memrq),
@@ -618,7 +886,9 @@ kna91h014 obj_pal(
 
     .RED(obj_pal_r),
     .GRN(obj_pal_g),
-    .BLU(obj_pal_b)
+    .BLU(obj_pal_b),
+
+    .ssbus(ssb[SSIDX_PAL_OBJ])
 );
 
 wire [4:0] obj_r = en_sprite_palette ? obj_pal_r : { obj_pix[3:0], 1'b0 };
@@ -662,7 +932,12 @@ sprite sprite(
     .sdr_data(sdr_sprite_dout),
     .sdr_addr(sdr_sprite_addr),
     .sdr_req(sdr_sprite_req),
-    .sdr_rdy(sdr_sprite_rdy)
+    .sdr_rdy(sdr_sprite_rdy),
+
+    .ssbus_ram_l(ssb[SSIDX_SPRITE_RAM_L]),
+    .ssbus_ram_h(ssb[SSIDX_SPRITE_RAM_H]),
+    .ssbus_objram(ssb[SSIDX_SPRITE_OBJRAM]),
+    .ssbus_regs(ssb[SSIDX_SPRITE_REGS])
 );
 
 

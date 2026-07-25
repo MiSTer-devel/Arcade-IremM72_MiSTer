@@ -121,6 +121,59 @@ class Memory16b : public MemoryInterface
     uint32_t mSize;
 };
 
+// Byte view over a 16-bit-word backing array (dualport_ram_be storage):
+// even byte in bits 7:0, odd byte in bits 15:8 of each word.
+class Memory16w : public MemoryInterface
+{
+  public:
+    Memory16w(void *mem, uint32_t sizeBytes)
+    {
+        mMem = (uint16_t *)mem;
+        mSize = sizeBytes;
+    }
+
+    virtual void Read(uint32_t address, uint32_t size, void *data) const
+    {
+        uint32_t endAddress = address + ClampSize(mSize, address, size);
+        uint8_t *outPtr = (uint8_t *)data;
+        while (address < endAddress)
+        {
+            *outPtr = (mMem[address >> 1] >> ((address & 1) * 8)) & 0xff;
+            address++;
+            outPtr++;
+        }
+    }
+
+    virtual void Write(uint32_t address, uint32_t size, const void *data)
+    {
+        uint32_t endAddress = address + ClampSize(mSize, address, size);
+        const uint8_t *inPtr = (const uint8_t *)data;
+        while (address < endAddress)
+        {
+            uint16_t word = mMem[address >> 1];
+            if (address & 1)
+                word = (word & 0x00ff) | (*inPtr << 8);
+            else
+                word = (word & 0xff00) | *inPtr;
+            mMem[address >> 1] = word;
+            address++;
+            inPtr++;
+        }
+    }
+
+    virtual uint32_t GetSize() const
+    {
+        return mSize;
+    }
+    virtual bool IsReadonly() const
+    {
+        return false;
+    }
+
+    uint16_t *mMem;
+    uint32_t mSize;
+};
+
 class Memory8b : public MemoryInterface
 {
   public:

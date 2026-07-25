@@ -18,7 +18,9 @@
 //  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 //============================================================================
 
-module board_b_d_layer(
+module board_b_d_layer #(
+    parameter SS_IDX_RAM0 = -1
+) (
     input CLK_32M,
     input CE_PIX,
 
@@ -51,14 +53,63 @@ module board_b_d_layer(
     input enabled,
     input paused,
 
-    input m84
+    input m84,
+
+    // savestate: one chunk per VRAM bank (indices SS_IDX_RAM0+0..3) plus the
+    // scroll/pixel-pipeline registers
+    ssbus_if.slave ssbus_ram0,
+    ssbus_if.slave ssbus_ram1,
+    ssbus_if.slave ssbus_ram2,
+    ssbus_if.slave ssbus_ram3,
+    ssbus_if.slave ssbus_regs,
+    input ss_restore
 );
+
+localparam SS_IDX_REGS = SS_IDX_RAM0 + 4;
 
 assign DOUT = A[1] ? { dout_11, dout_10 } : { dout_01 , dout_00 };
 
 wire [7:0] dout_00, dout_01, dout_10, dout_11;
 
-dpramv #(.widthad_a(12)) ram_00
+// Savestate access hijacks the scan-out port (B) of each bank; only active
+// while the core is savestate-quiesced, so the worst case is a few frames of
+// on-screen garbage during the streaming itself.
+wire [11:0] scan_addr = {SV[8:3], SH[8:3]};
+
+wire [11:0] ram_addr_b[4];
+wire  [7:0] ram_data_b[4];
+wire        ram_wren_b[4];
+
+ram_ss_adaptor #(.WIDTH(8), .WIDTHAD(12), .SS_IDX(SS_IDX_RAM0 + 0)) ram_00_ss(
+    .clk(CLK_32M),
+    .wren_in(1'd0), .addr_in(scan_addr), .data_in(8'd0),
+    .wren_out(ram_wren_b[0]), .addr_out(ram_addr_b[0]), .data_out(ram_data_b[0]),
+    .q(ram_00_dout),
+    .ssbus(ssbus_ram0)
+);
+ram_ss_adaptor #(.WIDTH(8), .WIDTHAD(12), .SS_IDX(SS_IDX_RAM0 + 1)) ram_01_ss(
+    .clk(CLK_32M),
+    .wren_in(1'd0), .addr_in(scan_addr), .data_in(8'd0),
+    .wren_out(ram_wren_b[1]), .addr_out(ram_addr_b[1]), .data_out(ram_data_b[1]),
+    .q(ram_01_dout),
+    .ssbus(ssbus_ram1)
+);
+ram_ss_adaptor #(.WIDTH(8), .WIDTHAD(12), .SS_IDX(SS_IDX_RAM0 + 2)) ram_10_ss(
+    .clk(CLK_32M),
+    .wren_in(1'd0), .addr_in(scan_addr), .data_in(8'd0),
+    .wren_out(ram_wren_b[2]), .addr_out(ram_addr_b[2]), .data_out(ram_data_b[2]),
+    .q(ram_10_dout),
+    .ssbus(ssbus_ram2)
+);
+ram_ss_adaptor #(.WIDTH(8), .WIDTHAD(12), .SS_IDX(SS_IDX_RAM0 + 3)) ram_11_ss(
+    .clk(CLK_32M),
+    .wren_in(1'd0), .addr_in(scan_addr), .data_in(8'd0),
+    .wren_out(ram_wren_b[3]), .addr_out(ram_addr_b[3]), .data_out(ram_data_b[3]),
+    .q(ram_11_dout),
+    .ssbus(ssbus_ram3)
+);
+
+dualport_ram_unreg #(.WIDTHAD(12)) ram_00
 (
     .clock_a(CLK_32M),
     .address_a(A[13:2]),
@@ -67,13 +118,13 @@ dpramv #(.widthad_a(12)) ram_00
     .data_a(DIN[7:0]),
 
     .clock_b(CLK_32M),
-    .address_b({SV[8:3], SH[8:3]}),
-    .data_b(),
-    .wren_b(1'd0),
+    .address_b(ram_addr_b[0]),
+    .data_b(ram_data_b[0]),
+    .wren_b(ram_wren_b[0]),
     .q_b(ram_00_dout)
 );
 
-dpramv #(.widthad_a(12)) ram_01
+dualport_ram_unreg #(.WIDTHAD(12)) ram_01
 (
     .clock_a(CLK_32M),
     .address_a(A[13:2]),
@@ -82,13 +133,13 @@ dpramv #(.widthad_a(12)) ram_01
     .data_a(DIN[15:8]),
 
     .clock_b(CLK_32M),
-    .address_b({SV[8:3], SH[8:3]}),
-    .data_b(),
-    .wren_b(1'd0),
+    .address_b(ram_addr_b[1]),
+    .data_b(ram_data_b[1]),
+    .wren_b(ram_wren_b[1]),
     .q_b(ram_01_dout)
 );
 
-dpramv #(.widthad_a(12)) ram_10
+dualport_ram_unreg #(.WIDTHAD(12)) ram_10
 (
     .clock_a(CLK_32M),
     .address_a(A[13:2]),
@@ -97,13 +148,13 @@ dpramv #(.widthad_a(12)) ram_10
     .data_a(DIN[7:0]),
 
     .clock_b(CLK_32M),
-    .address_b({SV[8:3], SH[8:3]}),
-    .data_b(),
-    .wren_b(1'd0),
+    .address_b(ram_addr_b[2]),
+    .data_b(ram_data_b[2]),
+    .wren_b(ram_wren_b[2]),
     .q_b(ram_10_dout)
 );
 
-dpramv #(.widthad_a(12)) ram_11
+dualport_ram_unreg #(.WIDTHAD(12)) ram_11
 (
     .clock_a(CLK_32M),
     .address_a(A[13:2]),
@@ -112,9 +163,9 @@ dpramv #(.widthad_a(12)) ram_11
     .data_a(DIN[15:8]),
 
     .clock_b(CLK_32M),
-    .address_b({SV[8:3], SH[8:3]}),
-    .data_b(),
-    .wren_b(1'd0),
+    .address_b(ram_addr_b[3]),
+    .data_b(ram_data_b[3]),
+    .wren_b(ram_wren_b[3]),
     .q_b(ram_11_dout)
 );
 
@@ -162,14 +213,47 @@ reg [8:0] ve_latch;
 
 always @(posedge CLK_32M) begin
     ve_latch <= VE;
-    if (paused) begin
-        {adj_v, adj_h} <= paused_offsets[ve_latch];
+    if (ssbus_regs.access(SS_IDX_REGS) & ssbus_regs.write) begin
+        // Savestate restore writes take priority (the paused replay below
+        // would otherwise overwrite adj_v/adj_h the very next clock).
+        case (ssbus_regs.addr[2:0])
+        3'd0: adj_v <= ssbus_regs.data[8:0];
+        3'd1: adj_h <= ssbus_regs.data[8:0];
+        default: begin end
+        endcase
+    end else if (paused) begin
+        // During a savestate restore paused_offsets holds pre-restore (or, in
+        // a fresh process, uninitialized) data; the replay would clobber the
+        // restored adj_v/adj_h, so it is gated until the core resumes.  The
+        // recording resumes on unpause and repopulates within one frame.
+        if (~ss_restore) {adj_v, adj_h} <= paused_offsets[ve_latch];
     end else begin
         if (VSCK & IO_BE[0]) adj_v[7:0] <= IO_DIN[7:0];
         if (HSCK & IO_BE[0]) adj_h[7:0] <= IO_DIN[7:0];
         if (VSCK & IO_BE[1]) adj_v[8]   <= IO_DIN[8];
         if (HSCK & IO_BE[1]) adj_h[8]   <= IO_DIN[8];
         paused_offsets[ve_latch] <= {adj_v, adj_h};
+    end
+end
+
+// Savestate regs slave.  COD and the pixel-pipeline latches free-run with
+// CE_PIX during pause, so their restore writes land in the pipeline block
+// below with top priority; enumeration/reads/acks live here.
+always @(posedge CLK_32M) begin
+    ssbus_regs.setup(SS_IDX_REGS, 5, 1);
+
+    if (ssbus_regs.access(SS_IDX_REGS)) begin
+        if (ssbus_regs.write) begin
+            ssbus_regs.write_ack(SS_IDX_REGS);
+        end else if (ssbus_regs.read) begin
+            case (ssbus_regs.addr[2:0])
+            3'd0: ssbus_regs.read_response(SS_IDX_REGS, { 55'd0, adj_v });
+            3'd1: ssbus_regs.read_response(SS_IDX_REGS, { 55'd0, adj_h });
+            3'd2: ssbus_regs.read_response(SS_IDX_REGS, { 48'd0, COD });
+            3'd3: ssbus_regs.read_response(SS_IDX_REGS, { 57'd0, HREV1, VREV, HREV2, COL });
+            default: ssbus_regs.read_response(SS_IDX_REGS, { 62'd0, CP15, CP8 });
+            endcase
+        end
     end
 end
 
@@ -186,7 +270,15 @@ always @(posedge CLK_32M) begin
         rom_data <= sdr_data;
     end
 
-    if (CE_PIX) begin
+    // Savestate restore writes for the free-running pixel-pipeline latches
+    if (ssbus_regs.access(SS_IDX_REGS) & ssbus_regs.write) begin
+        case (ssbus_regs.addr[2:0])
+        3'd2: COD <= ssbus_regs.data[15:0];
+        3'd3: { HREV1, VREV, HREV2, COL } <= ssbus_regs.data[6:0];
+        3'd4: { CP15, CP8 } <= ssbus_regs.data[1:0];
+        default: begin end
+        endcase
+    end else if (CE_PIX) begin
         if (SH[2:0] == 2'b001) begin
             if (m84) begin
                 COD <= attrib_0;

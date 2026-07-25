@@ -57,13 +57,29 @@ module board_b_d (
     input sdr_rdy,
 
     input paused,
-    
+
     input en_layer_a,
     input en_layer_b,
     input en_palette,
 
-    input m84
+    input m84,
+
+    // savestates
+    ssbus_if.slave ssbus_a_ram0,
+    ssbus_if.slave ssbus_a_ram1,
+    ssbus_if.slave ssbus_a_ram2,
+    ssbus_if.slave ssbus_a_ram3,
+    ssbus_if.slave ssbus_a_regs,
+    ssbus_if.slave ssbus_b_ram0,
+    ssbus_if.slave ssbus_b_ram1,
+    ssbus_if.slave ssbus_b_ram2,
+    ssbus_if.slave ssbus_b_ram3,
+    ssbus_if.slave ssbus_b_regs,
+    ssbus_if.slave ssbus_palette,
+    input ss_restore
 );
+
+import m72_pkg::*;
 
 // M72-B-D 1/8
 // Didn't implement WAIT signal
@@ -115,7 +131,7 @@ board_b_d_sdram board_b_d_sdram(
     .sdr_rdy(sdr_rdy)
 );
 
-board_b_d_layer layer_a(
+board_b_d_layer #(.SS_IDX_RAM0(SSIDX_LAYER_A_RAM0)) layer_a(
     .CLK_32M(CLK_32M),
     .CE_PIX(CE_PIX),
 
@@ -148,11 +164,18 @@ board_b_d_layer layer_a(
     .enabled(en_layer_a),
     .paused(paused),
 
-    .m84(m84)
+    .m84(m84),
+
+    .ssbus_ram0(ssbus_a_ram0),
+    .ssbus_ram1(ssbus_a_ram1),
+    .ssbus_ram2(ssbus_a_ram2),
+    .ssbus_ram3(ssbus_a_ram3),
+    .ssbus_regs(ssbus_a_regs),
+    .ss_restore(ss_restore)
 );
 
 
-board_b_d_layer layer_b(
+board_b_d_layer #(.SS_IDX_RAM0(SSIDX_LAYER_B_RAM0)) layer_b(
     .CLK_32M(CLK_32M),
     .CE_PIX(CE_PIX),
 
@@ -185,7 +208,14 @@ board_b_d_layer layer_b(
     .enabled(en_layer_b),
     .paused(paused),
 
-    .m84(m84)
+    .m84(m84),
+
+    .ssbus_ram0(ssbus_b_ram0),
+    .ssbus_ram1(ssbus_b_ram1),
+    .ssbus_ram2(ssbus_b_ram2),
+    .ssbus_ram3(ssbus_b_ram3),
+    .ssbus_regs(ssbus_b_regs),
+    .ss_restore(ss_restore)
 );
 
 
@@ -200,7 +230,7 @@ wire S = a_opaque;
 
 assign P1L = ~(CP15A & a_opaque) & ~(CP15B & b_opaque) & ~(CP8A & BITA[3]) & ~(CP8B & BITB[3]);
 
-kna91h014 kna91h014(
+kna91h014 #(.SS_IDX(SSIDX_PAL_BG)) kna91h014(
     .CLK_32M(CLK_32M),
 
     .G(palette_memrq),
@@ -221,7 +251,9 @@ kna91h014 kna91h014(
 
     .RED(r_out),
     .GRN(g_out),
-    .BLU(b_out)
+    .BLU(b_out),
+
+    .ssbus(ssbus_palette)
 );
 
 assign RED = en_palette ? r_out : b_opaque ? { BITB, BITB[3] } : { BITA, BITA[3] };

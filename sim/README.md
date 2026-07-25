@@ -63,8 +63,9 @@ Method families: `sim.*` (initialize/load_game/load_mra/reset/run_cycles/
 run_frames/run_until/status/shutdown), `cpu.get_state`, `memory.*`
 (read/write/list_regions), `signal.*` (read/list — VPI hierarchical names or
 builtin aliases), `input.*` (set/clear/press/set_dipswitch/get_state),
-`state.*`/`nvram.*` (present but return "unsupported" until the core grows
-savestate support), `trace.*` (FST), `audio_capture.*` (WAV),
+`state.*` (save/load `.m72state` files via the core's savestate machinery,
+see `../docs/savestates.md`; `nvram.*` still returns "unsupported"),
+`trace.*` (FST), `audio_capture.*` (WAV),
 `video.screenshot/set_flip`, `debug_link.*` (PicoROM emulation), `gui.*`
 (TestROM GUI block).
 
@@ -85,8 +86,11 @@ by name, GFX/sound from the hharryu/hharry zips by CRC.
 
 ## Notes / current limitations
 
-- Save states: UI and protocol are in place; the core has no savestate
-  machinery yet, so save/restore report "unsupported".
+- Save states: fully wired for R-Type (`state.save`/`state.load`, GUI state
+  window, `states/<game>/NNN.m72state`).  Other games' extra hardware (MCU,
+  samples, mailbox) and the YM2151 are not saved yet — see
+  `../docs/savestates.md` for the section map, debug signals
+  (`ss_state_out`, `ss_stream_*`, ...) and `M72_STATE_*` env knobs.
 - nvram/hiscore: not wired into the sim (hiscore module is MiSTer-side).
 - The V30 CPU window shows CS:IP/opcode (+ capstone disasm); full register
   export isn't available from the netlist.

@@ -8,6 +8,7 @@
 #include "verilated.h"
 #include "verilated_fst_c.h"
 #include "sim_sdram.h"
+#include "sim_ddr.h"
 #include "sim_video.h"
 #include "sim_audio_capture.h"
 #include "testrom_gui.h"
@@ -70,6 +71,8 @@ void SimCore::Init()
 
     // Create memory subsystems
     mSDRAM = std::make_unique<SimSDRAM>(32 * 1024 * 1024);
+    // 64-bit DDR window used by the savestate streamer (slots at 0x3E000000)
+    mDDRMemory = std::make_unique<SimDDR>(0x30000000, 256 * 1024 * 1024);
     mVideo = std::make_unique<SimVideo>();
     mAudioCapture = std::make_unique<SimAudioCapture>();
 
@@ -102,7 +105,8 @@ void SimCore::Init()
     SetMemory(MemoryRegion::SPRITE_ROM, std::make_unique<MemorySlice>(*mSDRAM, SPRITE_ROM_SDR_BASE, 1024 * 1024));
     SetMemory(MemoryRegion::BG_A_ROM, std::make_unique<MemorySlice>(*mSDRAM, BG_A_ROM_SDR_BASE, 1024 * 1024));
     SetMemory(MemoryRegion::BG_B_ROM, std::make_unique<MemorySlice>(*mSDRAM, BG_B_ROM_SDR_BASE, 1024 * 1024));
-    SetMemory(MemoryRegion::WORK_RAM, std::make_unique<MemorySlice>(*mSDRAM, CPU_RAM_SDR_BASE, 64 * 1024));
+    SetMemory(MemoryRegion::WORK_RAM,
+              std::make_unique<Memory16w>(syms->TOP__sim_top__m72_inst__work_ram.ram.m_storage, 128 * 1024));
 
     // BRAM-backed regions (verilated dpramv instances)
     SetMemory(MemoryRegion::SPRITE_RAM,
@@ -175,6 +179,18 @@ void SimCore::ServiceSdramChannels()
 TickResult SimCore::TickOneCycle()
 {
     mTotalTicks++;
+
+    // Service the savestate DDR window once per CLK_32M cycle (memory_stream
+    // runs in the 32MHz domain).
+    {
+        uint64_t rdata = mTop->ddr_rdata;
+        uint8_t busy = 0, readComplete = 0;
+        mDDRMemory->Clock(mTop->ddr_addr, mTop->ddr_wdata, rdata, mTop->ddr_read != 0, mTop->ddr_write != 0,
+                          busy, readComplete, mTop->ddr_burstcnt, mTop->ddr_byteenable);
+        mTop->ddr_rdata = rdata;
+        mTop->ddr_busy = busy;
+        mTop->ddr_read_complete = readComplete;
+    }
 
     // One tick = one CLK_32M period = three CLK_96M periods.  Both clocks come
     // from the same PLL, phase aligned: they rise together at step 0.

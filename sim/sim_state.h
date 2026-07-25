@@ -3,21 +3,24 @@
 #include <vector>
 #include <string>
 
-// Save-state manager.  The M72 core does not implement savestate machinery
-// yet, so every operation fails with a clear "unsupported" error; the UI and
-// protocol surface stay in place for when the core grows ss support.
+// Forward declarations
+class M72;
+class SimDDR;
+
+// Save-state manager: drives the core's ss_do_save/ss_do_restore handshake
+// and dumps/loads the DDR slot window to .m72state files.
 class SimState
 {
   public:
-    SimState() = default;
+    SimState(M72 *top, SimDDR *memory, int offset, int size);
 
     // Set the current game name for directory organization
     void SetGameName(const char *gameName);
 
-    // Save state to the specified file (always fails: unsupported by core)
+    // Save state to the specified file
     bool SaveState(const char *filename);
 
-    // Restore state from the specified file (always fails: unsupported by core)
+    // Restore state from the specified file
     bool RestoreState(const char *filename);
 
     // Get list of all available state files in game-specific directory
@@ -32,9 +35,10 @@ class SimState
     // Generate next available state filename (000.m72state, 001.m72state, ...)
     std::string GenerateNextStateName();
 
-    // Human-readable reason save/restore is unavailable
-    static const char *UnsupportedReason();
-
   private:
+    M72 *mTop;
+    SimDDR *mMemory;
+    int mOffset;
+    int mSize;
     std::string mGameName;
 };

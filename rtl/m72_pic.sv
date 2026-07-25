@@ -18,7 +18,9 @@
 //  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 //============================================================================
 
-module m72_pic(
+module m72_pic #(
+    parameter SS_IDX = -1
+) (
     input clk,
     input ce,
     input reset,
@@ -34,16 +36,19 @@ module m72_pic(
     output reg [7:0] int_vector,
     input int_ack,
 
-    input [7:0] intp
+    input [7:0] intp,
+
+    ssbus_if.slave ssbus
 );
 
-enum {
+typedef enum bit [2:0] {
     UNINIT,
     INIT_IW2,
     INIT_IW3,
     INIT_IW4,
     INIT_DONE
-} init_state = UNINIT;
+} state_t;
+state_t init_state = UNINIT;
 
 reg [7:0] IW1, IW2, IW3, IW4;
 reg [7:0] IMW, IRR, ISR;
@@ -66,6 +71,22 @@ always_ff @(posedge clk or posedge reset) begin
         init_state <= UNINIT;
         int_req <= 0;
         intp_latch <= 0;
+    end else if (ssbus.access(SS_IDX) & ssbus.write) begin
+        // Savestate restore writes (the ce-gated body below is frozen)
+        case (ssbus.addr[3:0])
+        4'd0: IW1 <= ssbus.data[7:0];
+        4'd1: IW2 <= ssbus.data[7:0];
+        4'd2: IW3 <= ssbus.data[7:0];
+        4'd3: IW4 <= ssbus.data[7:0];
+        4'd4: IMW <= ssbus.data[7:0];
+        4'd5: PFCW <= ssbus.data[7:0];
+        4'd6: MCW <= ssbus.data[7:0];
+        4'd7: IRR <= ssbus.data[7:0];
+        4'd8: ISR <= ssbus.data[7:0];
+        4'd9: intp_latch <= ssbus.data[7:0];
+        4'd10: init_state <= state_t'(ssbus.data[2:0]);
+        default: {int_req, int_vector} <= ssbus.data[8:0];
+        endcase
     end else if (ce) begin
         if (cs & wr) begin
             if (~a0) begin
@@ -138,6 +159,32 @@ always_ff @(posedge clk or posedge reset) begin
                     end
                 end
             end
+        end
+    end
+end
+
+// Savestate slave: enumeration, reads and acks (writes live above)
+always_ff @(posedge clk) begin
+    ssbus.setup(SS_IDX, 12, 1);
+
+    if (ssbus.access(SS_IDX)) begin
+        if (ssbus.write) begin
+            ssbus.write_ack(SS_IDX);
+        end else if (ssbus.read) begin
+            case (ssbus.addr[3:0])
+            4'd0: ssbus.read_response(SS_IDX, { 56'd0, IW1 });
+            4'd1: ssbus.read_response(SS_IDX, { 56'd0, IW2 });
+            4'd2: ssbus.read_response(SS_IDX, { 56'd0, IW3 });
+            4'd3: ssbus.read_response(SS_IDX, { 56'd0, IW4 });
+            4'd4: ssbus.read_response(SS_IDX, { 56'd0, IMW });
+            4'd5: ssbus.read_response(SS_IDX, { 56'd0, PFCW });
+            4'd6: ssbus.read_response(SS_IDX, { 56'd0, MCW });
+            4'd7: ssbus.read_response(SS_IDX, { 56'd0, IRR });
+            4'd8: ssbus.read_response(SS_IDX, { 56'd0, ISR });
+            4'd9: ssbus.read_response(SS_IDX, { 56'd0, intp_latch });
+            4'd10: ssbus.read_response(SS_IDX, { 61'd0, init_state });
+            default: ssbus.read_response(SS_IDX, { 55'd0, int_req, int_vector });
+            endcase
         end
     end
 end
