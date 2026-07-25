@@ -80,12 +80,21 @@ jtframe_frac_cen #(2) jt51_cen
 
 
 wire [7:0] ram_dout;
+wire [7:0] ram_dout_hi;
 
-assign DOUT = { ram_dout, ram_dout };
+// The CPU-side window presents consecutive bytes on both lanes (16-bit view
+// of the byte-wide Z80 RAM, as on the original board): port A serves the even
+// byte (and the Z80's own accesses), port B serves the odd byte.  Port B is
+// only needed by the ROM loader while the SOUND bram region streams in
+// (bram_cs high), which never overlaps runtime accesses.
+assign DOUT = { ram_dout_hi, ram_dout };
 assign DOUT_VALID = MRD & SDBEN;
 
 wire ram_region = m84 ? &ram_addr[15:12] : 1'b1;
-wire ram_write = (MWR & SDBEN) | (ram_region & ~z80_MREQ_n & ~z80_WR_n);
+wire ram_write = (MWR & SDBEN & BE[0]) | (ram_region & ~z80_MREQ_n & ~z80_WR_n);
+
+wire [15:0] ram_addr_hi = {A[15:1], 1'b1};
+wire ram_write_hi = MWR & SDBEN & BE[1];
 
 dpramv #(.widthad_a(16)) sound_rom_ram
 (
@@ -96,10 +105,10 @@ dpramv #(.widthad_a(16)) sound_rom_ram
     .data_a(ram_data),
 
     .clock_b(clk_bram),
-    .address_b(bram_addr[15:0]),
-    .data_b(bram_data),
-    .wren_b(bram_cs & bram_wr),
-    .q_b()
+    .address_b(bram_cs ? bram_addr[15:0] : ram_addr_hi),
+    .data_b(bram_cs ? bram_data : DIN[15:8]),
+    .wren_b(bram_cs ? bram_wr : ram_write_hi),
+    .q_b(ram_dout_hi)
 );
 
 wire [7:0] SD_IN = z80_dout;
@@ -115,11 +124,10 @@ wire M1_n;
 wire [15:0] z80_addr;
 wire z80_IORQ_n, z80_RD_n, z80_WR_n, z80_MREQ_n, z80_M1_n;
 
-// Aligned-bus lane select: odd bytes ride the high lane (DIN[15:8]) with
-// BE=={1,0}. Even/word writes take the low lane.
-wire cpu_odd = BE[1] & ~BE[0];
-wire [15:0] ram_addr = BRQ ? {A[15:1], cpu_odd} : z80_addr;
-wire [7:0] ram_data = BRQ ? (cpu_odd ? DIN[15:8] : DIN[7:0]) : z80_dout;
+// Port A always serves the even byte for CPU accesses (odd bytes ride the
+// high lane through port B); the Z80's own byte accesses are unchanged.
+wire [15:0] ram_addr = BRQ ? {A[15:1], 1'b0} : z80_addr;
+wire [7:0] ram_data = BRQ ? DIN[7:0] : z80_dout;
 wire [7:0] z80_din;
 wire [7:0] z80_dout;
 

@@ -134,6 +134,21 @@ always_ff @(posedge clk) begin
     ad_q    <= AD;
 end
 
+// T1 address-phase pin capture on the FALLING clock edge (the tb_v30_core.sv
+// scheme): AD holds the address and UBE_N is stable across the half-clock
+// between the T1-entering CE and the core's CE_HALF processing edge.
+// Posedge-delayed copies can belong to the neighbouring bus cycle when
+// cycles run back-to-back (string ops corrupted their byte enables), and
+// live posedge sampling races the core's switch to the data phase.
+reg [19:0] addr_neg;
+reg        ube_neg;
+always_ff @(negedge clk) begin
+    if (ce_half && t_state == ST_T1) begin
+        addr_neg <= AD;
+        ube_neg  <= UBE_N;
+    end
+end
+
 //----------------------------------------------------------------------------
 // T-state tracker (advances under ce)
 //----------------------------------------------------------------------------
@@ -198,10 +213,12 @@ always_ff @(posedge clk) begin
                 drive_en <= 1'b0;
         end
 
-        // address / byte-enable latch on the T1 half-cycle strobe
+        // Address / byte-enable latch on the T1 half-cycle strobe, from the
+        // negedge-captured pin samples (see below) - race-free against both
+        // the address-drive and the data-phase switch.
         if (ce_half && t_state == ST_T1) begin
-            addr_lat   <= {ad_q[19:1], 1'b0};
-            be_lat     <= {~ube_n_q, ~ad_q[0]};
+            addr_lat   <= {addr_neg[19:1], 1'b0};
+            be_lat     <= {~ube_neg, ~addr_neg[0]};
             addr_valid <= 1'b1;
         end else if (ce && (next_t == ST_T4 || next_t == ST_TI)) begin
             addr_valid <= 1'b0;
