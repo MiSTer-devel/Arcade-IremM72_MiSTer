@@ -164,6 +164,17 @@ assign snd_io_req = ~z80_IORQ_n;
 assign snd_io_data = z80_dout;
 
 tv80s z80(
+`ifdef USE_AUTO_SS
+    // TODO: wired to auto_save_adaptor2 in the savestate milestone
+    .auto_ss_rd(1'b0),
+    .auto_ss_wr(1'b0),
+    .auto_ss_device_idx(8'd0),
+    .auto_ss_state_idx(16'd0),
+    .auto_ss_base_device_idx(8'd0),
+    .auto_ss_data_in(32'd0),
+    .auto_ss_data_out(),
+    .auto_ss_ack(),
+`endif
     .reset_n(~BRQ & ~reset),
     .clk(CLK_32M),
     .cen(CE_AUDIO & ~pause),

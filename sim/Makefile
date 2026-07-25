@@ -9,6 +9,9 @@ endif
 OBJ_DIR = obj
 VERILATED_DIR = verilated
 
+# Use the generated tv80 with auto_ss savestate ports (rtl/tv80_auto_ss.sv)
+USE_AUTO_SS = 1
+
 GAME ?= hharryu
 
 VERILATOR = verilator
@@ -81,6 +84,8 @@ NETLISTS = rtl_gen/mc8051_core.v
 
 # ddr_debug.sv first: it declares the file-scope ddr_debug_data_t typedef
 HDL_SRC  = ../rtl/ddr_debug.sv ../rtl/m72_pkg.sv
+# Savestate infrastructure: ssbus_if/ddr_if interfaces + streamer + primitives
+HDL_SRC += ../rtl/savestates.sv ../rtl/ddram.sv ../rtl/memory_stream.sv ../rtl/ram.sv
 # V30 core (package first) + bus adapter
 HDL_SRC += ../rtl/v30/v30_ss_pkg.sv ../rtl/v30/v30_biu.sv ../rtl/v30/v30_eu.sv
 HDL_SRC += ../rtl/v30/v30_core.sv ../rtl/v30/v30_bus.sv
@@ -91,7 +96,12 @@ HDL_SRC += ../rtl/sprite.sv
 HDL_SRC += ../rtl/sound.sv ../rtl/sample_rom.sv
 HDL_SRC += ../rtl/mcu.sv ../rtl/mcu_emulator.sv ../rtl/dualport_mailbox.sv
 HDL_SRC += ../rtl/dpramv.sv ../rtl/rom.sv ../rtl/jtframe_frac_cen.v
+ifeq ($(USE_AUTO_SS),1)
+VERILATOR_ARGS += -DUSE_AUTO_SS
+HDL_SRC += ../rtl/tv80_auto_ss.sv
+else
 HDL_SRC += ../rtl/tv80/tv80s.v ../rtl/tv80/tv80_core.v ../rtl/tv80/tv80_alu.v ../rtl/tv80/tv80_mcode.v ../rtl/tv80/tv80_reg.v
+endif
 HDL_SRC += ../sys/iir_filter.v
 HDL_SRC += $(wildcard ../rtl/jt51/jt51*.v)
 HDL_SRC += $(NETLISTS)
