@@ -1,6 +1,6 @@
 //============================================================================
 // Imported from nec_test (https://github.com/.../nec_test)
-// Source: hdl/rtl/core, commit 595e2c4bbf7e474e3240eb25ff94515385c807ca
+// Source: hdl/rtl/core, commit 2c7ceab7084d35dd56395b3b9d6fca473446dc73
 // Cycle-accurate NEC V30 (uPD70116) max-mode core, verified vs golden traces.
 // Do not hand-edit; re-import from upstream. No license header upstream (same author).
 //============================================================================
@@ -1778,12 +1778,19 @@ localparam int unsigned IEI_W1   = 30;  // 0F39 s>=16: imm -> write (-off)
 //----------------------------------------------------------------------------
 // edge-time helper tasks
 //----------------------------------------------------------------------------
+// RR4: one-shot prefix latches (seg override / REP / LOCK) end at TRUE
+// retirement -- every S_FIRST entry that closes an instruction or enters a
+// handler. Single source of truth; enforced by sw/prefix_clear_lint.py.
+task automatic clear_prefixes();
+    seg_ovr_en <= 1'b0;
+    rep_en     <= 1'b0;
+    lock_en    <= 1'b0;
+endtask
+
 task automatic retire();
     arch_ip <= pc;
     state   <= S_FIRST;
-    seg_ovr_en <= 1'b0;      // prefix latches end with their instruction
-    rep_en     <= 1'b0;
-    lock_en    <= 1'b0;
+    clear_prefixes();
     shadow     <= 1'b0;      // shadowing instructions re-set it after
 endtask
 
@@ -2043,6 +2050,8 @@ always_ff @(posedge clk) begin
             pc         <= bkd_regs[192 +: 16];
             arch_ip    <= bkd_regs[192 +: 16];
             psw        <= (bkd_regs[208 +: 16] & 16'h0FD5) | 16'hF002;
+            // PFX-KEEP: bkd_load register injection (not an instruction retire;
+            // prefix latches are cleared by the reset block)
             state      <= S_FIRST;
         end
     end else if (ce) begin
@@ -2344,9 +2353,7 @@ always_ff @(posedge clk) begin
                                 // 8E - controlled pushedPC sweep)
                                 shadow <= 1'b1;
                                 arch_ip <= pc + 16'd1;
-                                seg_ovr_en <= 1'b0;
-                                rep_en     <= 1'b0;
-                                lock_en    <= 1'b0;
+                                clear_prefixes();
                                 state <= S_FIRST;
                             end else if (op_test) begin
                                 // TEST rm,reg: flags + retire ON the
@@ -2359,6 +2366,7 @@ always_ff @(posedge clk) begin
                                            reg8_get(q_byte[5:3]), psw);
                                 psw <= opc[0] ? tt16[31:16] : tt8[23:8];
                                 arch_ip <= pc + 16'd1;
+                                clear_prefixes();
                                 state <= S_FIRST;
                             end else if (op_alu | op_movs8 | op_movs16 |
                                 op_movl8 | op_movl16 |
@@ -2367,6 +2375,7 @@ always_ff @(posedge clk) begin
                             else if (op_fpo) begin
                                 // ESC reg: retire ON the modrm pop
                                 arch_ip <= pc + 16'd1;
+                                clear_prefixes();
                                 state <= S_FIRST;
                             end
                             else if (op_alui || op_shimm || op_movri)
@@ -2663,6 +2672,8 @@ always_ff @(posedge clk) begin
                         seg_ovr_en <= 1'b1;
                         seg_ovr    <= srmap(opc[4:3]);
                         arch_ip    <= pc;
+                        // PFX-KEEP: segment-override own-retire; the latch must
+                        // persist to the prefixed instruction (set just above)
                         state      <= S_FIRST;
                     end else if (op_repp) begin
                         rep_en  <= 1'b1;
@@ -2670,6 +2681,8 @@ always_ff @(posedge clk) begin
                                     opc == 8'hF2 ? 2'd1 :
                                     opc == 8'h65 ? 2'd2 : 2'd3;
                         arch_ip <= pc;
+                        // PFX-KEEP: REP own-retire; rep_en persists to the
+                        // string instruction (set just above)
                         state   <= S_FIRST;
                     end else if (op_lockp) begin
                         // LOCK (F0): retires as its own 2-cycle instruction
@@ -2678,6 +2691,8 @@ always_ff @(posedge clk) begin
                         // BIU (Stage 6). Transparent to prefetch (measured).
                         lock_en <= 1'b1;
                         arch_ip <= pc;
+                        // PFX-KEEP: LOCK own-retire; lock_en persists to the
+                        // locked instruction (set just above)
                         state   <= S_FIRST;
                     end else if (opc == 8'hF5) begin      // NOT1 CY
                         psw[0] <= ~psw[0];
@@ -2992,6 +3007,7 @@ always_ff @(posedge clk) begin
                     if (mrm_mod == 2'd3) begin
                         rf[mrm_rm] <= {q_byte, disp[7:0]};
                         arch_ip <= pc + 16'd1;
+                        clear_prefixes();
                         state <= S_FIRST;
                     end else begin
                         // C7 word store: the write is ready at the imm-hi
@@ -3039,6 +3055,7 @@ always_ff @(posedge clk) begin
                     // retire on the pop edge (B8 pattern): pc is
                     // incremented THIS cycle, so arch_ip needs +1
                     arch_ip <= pc + 16'd1;
+                    clear_prefixes();
                     state <= S_FIRST;
                 end else if (op_grpf7 && mrm_reg == 3'd0) begin
                     // TEST rm16,imm16: flags + retire ON the hi pop
@@ -3048,6 +3065,7 @@ always_ff @(posedge clk) begin
                                  {q_byte, disp[7:0]}, psw);
                     psw <= tw16[31:16];
                     arch_ip <= pc + 16'd1;
+                    clear_prefixes();
                     state <= S_FIRST;
                 end else if (op_imuli) begin
                     // 69: +4 on sign mismatch rm vs imm16 (measured)
@@ -3068,6 +3086,7 @@ always_ff @(posedge clk) begin
                 rf[opc[2:0]] <= {q_byte, disp[7:0]};
                 pc <= pc + 16'd1;
                 arch_ip <= pc + 16'd1;   // retire on the same edge as the pop
+                clear_prefixes();
                 state <= S_FIRST;
             end
 
@@ -3116,6 +3135,7 @@ always_ff @(posedge clk) begin
                         dly <= 6'd4; wnext <= S_JFLUSH; state <= S_JWAIT;
                     end else begin
                         arch_ip <= pc + 16'd1;
+                        clear_prefixes();
                         state <= S_FIRST;
                     end
                 end else if (opc == 8'hE3) begin                // BCWZ
@@ -3346,6 +3366,7 @@ always_ff @(posedge clk) begin
                 pc      <= fl_ip;
                 arch_ip <= fl_ip;
                 sr[SEG_CS] <= fl_cs;   // no-op for near flushes
+                clear_prefixes();
                 state   <= S_FIRST;
             end
             S_CALLFL: begin      // q_flush high this cycle (comb)
@@ -3356,11 +3377,13 @@ always_ff @(posedge clk) begin
             S_CALLPUSH: if (eu_started) state <= S_CALLW;
             S_CALLW: if (eu_done) begin
                 arch_ip <= pc;
+                clear_prefixes();
                 state <= S_FIRST;
             end
             S_RETF: begin        // q_flush high this cycle (comb)
                 pc      <= fl_ip;
                 arch_ip <= fl_ip;
+                clear_prefixes();
                 state   <= S_FIRST;
             end
 
@@ -3856,9 +3879,7 @@ always_ff @(posedge clk) begin
                 if (op_lea) begin
                     rf[mrm_reg] <= ea_base + {{8{q_byte[7]}}, q_byte};
                     arch_ip <= pc + 16'd1;
-                    seg_ovr_en <= 1'b0;
-                    rep_en     <= 1'b0;
-                    lock_en    <= 1'b0;
+                    clear_prefixes();
                     state <= S_FIRST;
                 end else begin
                     setup_access(ea_base + {{8{q_byte[7]}}, q_byte});
@@ -3891,9 +3912,7 @@ always_ff @(posedge clk) begin
                 if (op_lea) begin
                     rf[mrm_reg] <= ea_base + {q_byte, disp[7:0]};
                     arch_ip <= pc + 16'd1;
-                    seg_ovr_en <= 1'b0;
-                    rep_en     <= 1'b0;
-                    lock_en    <= 1'b0;
+                    clear_prefixes();
                     state <= S_FIRST;
                 end else begin
                     setup_access(ea_base + {q_byte, disp[7:0]});
@@ -5439,6 +5458,7 @@ always_ff @(posedge clk) begin
             S_TRAP_PC:    if (eu_started) state <= S_TRAP_PCW;
             S_TRAP_PCW:   if (eu_done) begin
                 arch_ip <= pc;
+                clear_prefixes();
                 state <= S_FIRST;
             end
 
@@ -5483,5 +5503,36 @@ assign dbg_regs = {psw, arch_ip, sr[SEG_DS], sr[SEG_SS], sr[SEG_CS],
                    sr[SEG_ES], rf[7], rf[6], rf[5], rf[4], rf[3], rf[2],
                    rf[1], rf[0]};
 assign dbg_pend = popr_pend || iret_pw;
+
+// ---------------------------------------------------------------------------
+// RR4 one-shot-prefix-leak assertion (sim-only; ifdef'd OUT of synthesis).
+// Fires if a one-shot prefix latch (seg_ovr_en/rep_en/lock_en) is still set
+// at an S_FIRST opcode pop whose PREVIOUS S_FIRST pop was NOT a prefix byte
+// -> the latch leaked past its instruction's retirement (the RR4 bug class).
+// Does not fire on the prefix's own retire (pfx_last_op = the prefix), nor
+// mid-REP (no S_FIRST pop occurs mid-string), nor on backdoor/savestate
+// injection (pfx_grace). Arms every Verilator regression as a leak detector.
+// ---------------------------------------------------------------------------
+`ifdef V30_PFX_ASSERT
+reg [7:0] pfx_last_op = 8'h90;   // last byte popped at S_FIRST
+reg       pfx_grace   = 1'b1;    // 1 boundary of grace after reset / ss-load
+always_ff @(posedge clk) begin
+    if (srst) begin
+        pfx_last_op <= 8'h90;
+        pfx_grace   <= 1'b1;
+    end else if (ce) begin
+        if (ss_we) pfx_grace <= 1'b1;                 // savestate restore
+        if (state == S_FIRST && q_pop) begin
+            if (!pfx_grace && (seg_ovr_en || rep_en || lock_en) &&
+                !(pfx_last_op inside {8'h26, 8'h2E, 8'h36, 8'h3E,
+                                      8'hF0, 8'hF2, 8'hF3, 8'h64, 8'h65}))
+                $fatal(1, "PFX LEAK last=%02x now=%02x s/r/l=%b%b%b",
+                       pfx_last_op, q_byte, seg_ovr_en, rep_en, lock_en);
+            pfx_last_op <= q_byte;
+            pfx_grace   <= 1'b0;
+        end
+    end
+end
+`endif
 
 endmodule
