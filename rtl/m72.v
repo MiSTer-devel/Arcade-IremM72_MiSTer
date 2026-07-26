@@ -155,7 +155,6 @@ always @(posedge CLK_32M) begin
 end
 
 reg ce_cpu, ce_cpu_half, ce_mcu;
-wire ce_mcu_nopause;
 
 // CE-freeze stall: withhold the CPU clock train while an SDRAM access is
 // outstanding. The new-request term covers the 1-clk gap between a request
@@ -188,10 +187,13 @@ always @(posedge CLK_32M) begin
         if (~cpu_stall && ce_cpu_count[10:1] != ce_steady_count) begin
             ce_cpu      <= ~ce_cpu_count[0];
             ce_cpu_half <=  ce_cpu_count[0];
+            // Tie the MCU CE to the V30 CE phase: the MCU advances (and stalls)
+            // in lockstep with the bursty catch-up V30, holding the shared-RAM
+            // protection handshake at a constant V30<->MCU phase relationship
+            // (the effect MAME gets from synchronize() on every MCU dpram write).
+            ce_mcu      <= reset_n & ~ce_cpu_count[0];
             ce_cpu_count <= ce_cpu_count + 11'd1;
         end
-
-        ce_mcu <= reset_n ? ce_mcu_nopause : 1'b0;
     end
 
     // GLOBAL savestate restore of the CE train. Only reachable while
@@ -206,7 +208,7 @@ always @(posedge CLK_32M) begin
     end
 end
 
-wire ce_pix_half, ce_mcu_half;
+wire ce_pix_half;
 jtframe_frac_cen #(2) pixel_cen
 (
     .clk(CLK_32M),
@@ -215,21 +217,12 @@ jtframe_frac_cen #(2) pixel_cen
     .cen({ce_pix_half, ce_pix})
 );
 
-// nu8051 takes one CE per oscillator period and does 12 CE ticks per machine
-// cycle internally, so ce_mcu is now the true 8MHz oscillator rate (32M/4),
-// not the machine-cycle rate the old Oregano core wanted - the delayed_ce
-// hack is gone.  The base fraction is n/m = 1/4; the 57/60Hz alternates keep
-// the same 12x-faster ratio as the old m=50/52 (i.e. 12/50 and 12/52, reduced
-// to 6/25 and 3/13) so the MCU stays locked to the video-timing-scaled clock.
-wire [9:0] mcu_cen_n = video_timing == VIDEO_57HZ ? 10'd6 : video_timing == VIDEO_60HZ ? 10'd3  : 10'd1;
-wire [9:0] mcu_cen_m = video_timing == VIDEO_57HZ ? 10'd25 : video_timing == VIDEO_60HZ ? 10'd13 : 10'd4;
-jtframe_frac_cen #(2) mcu_cen
-(
-    .clk(CLK_32M),
-    .n(mcu_cen_n),
-    .m(mcu_cen_m),
-    .cen({ce_mcu_half, ce_mcu_nopause})
-);
+// The nu8051 takes one CE per oscillator period (12 CE ticks per machine cycle
+// internally), so ce_mcu is the true 8MHz oscillator rate.  Rather than free-run
+// it from its own frac_cen, ce_mcu is tied to the V30 CE phase above so the MCU
+// bursts/stalls in lockstep with the (bursty catch-up) V30 - this holds the
+// shared-RAM protection handshake at a constant V30<->MCU phase, which a static
+// offset could not (the phase drifted with the V30's SDRAM catch-up).
 
 wire clock = CLK_32M;
 
