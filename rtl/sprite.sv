@@ -89,7 +89,9 @@ dualport_ram_unreg #(.WIDTHAD(9)) ram_h
     .clock_a(CLK_32M),
     .address_a(A[9:1]),
     .q_a(dout_h),
-    .wren_a(MWR & BUFDBEN),
+    // CPU write deferred past DMA: the CPU is READY-stalled while ~TNSL, so
+    // gating on TNSL lands the write only once the DMA snapshot has completed.
+    .wren_a(MWR & BUFDBEN & TNSL),
     .data_a(DIN[15:8]),
 
     .clock_b(CLK_32M),
@@ -104,7 +106,7 @@ dualport_ram_unreg #(.WIDTHAD(9)) ram_l
     .clock_a(CLK_32M),
     .address_a(A[9:1]),
     .q_a(dout_l),
-    .wren_a(MWR & BUFDBEN),
+    .wren_a(MWR & BUFDBEN & TNSL),   // see ram_h: CPU write deferred past DMA
     .data_a(DIN[7:0]),
 
     .clock_b(CLK_32M),

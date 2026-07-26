@@ -29,6 +29,7 @@ module board_b_d_layer #(
     input [19:0] A,
     input RD,
     input WR,
+    output wr_ready,   // low while a CPU write to this layer awaits its SH window
 
     input [15:0] IO_DIN,
     input [1:0] IO_BE,
@@ -114,7 +115,7 @@ dualport_ram_unreg #(.WIDTHAD(12)) ram_00
     .clock_a(CLK_32M),
     .address_a(A[13:2]),
     .q_a(dout_00),
-    .wren_a(WR & ~A[1]),
+    .wren_a(wr_commit & ~A[1]),
     .data_a(DIN[7:0]),
 
     .clock_b(CLK_32M),
@@ -129,7 +130,7 @@ dualport_ram_unreg #(.WIDTHAD(12)) ram_01
     .clock_a(CLK_32M),
     .address_a(A[13:2]),
     .q_a(dout_01),
-    .wren_a(WR & ~A[1]),
+    .wren_a(wr_commit & ~A[1]),
     .data_a(DIN[15:8]),
 
     .clock_b(CLK_32M),
@@ -144,7 +145,7 @@ dualport_ram_unreg #(.WIDTHAD(12)) ram_10
     .clock_a(CLK_32M),
     .address_a(A[13:2]),
     .q_a(dout_10),
-    .wren_a(WR & A[1]),
+    .wren_a(wr_commit & A[1]),
     .data_a(DIN[7:0]),
 
     .clock_b(CLK_32M),
@@ -159,7 +160,7 @@ dualport_ram_unreg #(.WIDTHAD(12)) ram_11
     .clock_a(CLK_32M),
     .address_a(A[13:2]),
     .q_a(dout_11),
-    .wren_a(WR & A[1]),
+    .wren_a(wr_commit & A[1]),
     .data_a(DIN[15:8]),
 
     .clock_b(CLK_32M),
@@ -195,6 +196,24 @@ wire [8:0] SH = ( ( m84 ? HE - 9'd4 : HE ) + adj_h ) ^ { 6'b0, {3{NL}} };
 
 reg [8:0] adj_v;
 reg [8:0] adj_h;
+
+// CPU tile-RAM write arbitration. The write is held off (via the shared v30
+// READY, deasserted while wr_ready is low) until SH[3] falls 1->0 - the slot
+// right after the tile load at SH[2:0]==3'b111. wr_serviced latches the single
+// physical bank write so the READY release is robust against the CE_PIX-vs-ce
+// clock phase; A/DIN/WR are held stable by the stall for the whole wait.
+reg sh3_q;
+reg wr_serviced;
+wire wr_window = CE_PIX & sh3_q & ~SH[3];       // SH[3] falling edge
+wire wr_commit = WR & wr_window & ~wr_serviced;  // exactly one bank write
+
+always @(posedge CLK_32M) begin
+    if (CE_PIX) sh3_q <= SH[3];
+    if (!WR)            wr_serviced <= 1'b0;
+    else if (wr_commit) wr_serviced <= 1'b1;
+end
+
+assign wr_ready = ~WR | wr_serviced;
 
 reg HREV1, VREV, HREV2;
 reg [15:0] COD;

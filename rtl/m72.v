@@ -271,6 +271,15 @@ wire sprite_palette_memrq;
 wire sound_memrq;
 wire work_ram_memrq;
 
+// V30 READY wait-states (authentic Tw, orthogonal to the SDRAM cpu_stall path).
+// Sprite: stall any CPU access to the buffer while DMA runs (~TNSL). Tile: the
+// per-layer bg_ready (from board_b_d) is low while a pending CPU tile write
+// awaits its SH window. mem_rd/mem_wr and the region decodes are stable across
+// the whole (now possibly Tw-extended) bus cycle, so the READY level is stable.
+wire bg_ready;
+wire sprite_wait = sprite_memrq & ~TNSL & (mem_rd | mem_wr);
+wire v30_ready   = ~sprite_wait & bg_ready;
+
 reg mem_rq_active = 0;
 assign sdr_cpu_mem_rq = mem_rq_active;
 
@@ -634,6 +643,7 @@ v30_bus #(.SS_IDX(SSIDX_V30)) v30(
     .ce(ce_cpu),
     .ce_half(ce_cpu_half),
     .reset(~reset_n),
+    .ready(v30_ready),
 
     .ssbus(ssb[SSIDX_V30]),
     .ss_restore_done(ss_restore_done),
@@ -774,6 +784,7 @@ board_b_d board_b_d(
 
     .DOUT(b_d_dout),
     .DOUT_VALID(b_d_dout_valid),
+    .bg_ready(bg_ready),
 
     .DIN(cpu_dout),
     .A(cpu_mem_addr),

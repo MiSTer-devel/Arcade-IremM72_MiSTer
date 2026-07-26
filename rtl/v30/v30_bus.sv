@@ -13,7 +13,8 @@
 //  The core is frozen by withholding ce/ce_half while an SDRAM access is
 //  outstanding, then catches up at one phase per fabric clock (16MHz burst)
 //  until it matches the steady 8MHz reference (m72.v owns that pacing).
-//  READY is tied high (no Tw).
+//  READY (m72.v-driven) inserts real Tw states for the sprite/tile RAM
+//  wait-state feature; it is orthogonal to the SDRAM CE-freeze above.
 //
 //  Distilled from nec_test/hdl/rtl/nec_bus.sv T-state tracker (large mode,
 //  minus wait-states / random / capture / power sequencing / harness), and
@@ -27,6 +28,7 @@ module v30_bus #(
     input             ce,          // CPU-clock advance strobe (T-state)
     input             ce_half,     // T1 address-latch strobe (2 clks after ce)
     input             reset,       // active high
+    input             ready,       // V30 READY: low at T3/Tw inserts Tw (M72 wait-states)
 
     // word-aligned unified bus
     output     [19:0] cpu_addr,    // bit0 forced 0
@@ -67,11 +69,12 @@ localparam bit [2:0] BS_MEMR = 3'b101;
 localparam bit [2:0] BS_MEMW = 3'b110;
 localparam bit [2:0] BS_PASV = 3'b111;
 
-// T-state encoding (TW unused, READY tied high)
+// T-state encoding (ST_TW value matches the BIU's, v30_biu.sv ST_TW=3'd4)
 localparam bit [2:0] ST_TI = 3'd0;
 localparam bit [2:0] ST_T1 = 3'd1;
 localparam bit [2:0] ST_T2 = 3'd2;
 localparam bit [2:0] ST_T3 = 3'd3;
+localparam bit [2:0] ST_TW = 3'd4;
 localparam bit [2:0] ST_T4 = 3'd5;
 
 //----------------------------------------------------------------------------
@@ -110,7 +113,7 @@ v30_core u_core (
     .CE         (ce),
     .CE_HALF    (ce_half),
     .RESET      (reset),
-    .READY      (1'b1),
+    .READY      (ready),
     .INT        (int_req),
     .NMI        (1'b0),
     .POLL_N     (1'b1),
@@ -213,7 +216,8 @@ wire [2:0] next_t =
     (t_state == ST_TI) ? (bs_active ? ST_T1 : ST_TI) :
     (t_state == ST_T1) ? ST_T2 :
     (t_state == ST_T2) ? ST_T3 :
-    (t_state == ST_T3) ? ST_T4 :             // READY==1: never Tw
+    (t_state == ST_T3) ? (ready ? ST_T4 : ST_TW) : // READY low -> Tw (mirrors BIU)
+    (t_state == ST_TW) ? (ready ? ST_T4 : ST_TW) : // loop Tw until READY sampled high
     /* ST_T4 */          (bs_active ? ST_T1 : ST_TI);
 
 wire read_type  = (bs_q == BS_CODE) || (bs_q == BS_MEMR) ||
@@ -291,9 +295,11 @@ assign code_fetch = (lat_type == BS_CODE);
 assign mem_rd = addr_valid && ((lat_type == BS_CODE) || (lat_type == BS_MEMR));
 assign io_rd  = addr_valid && (lat_type == BS_IOR);
 
-// write strobes: level held for the single T3 CPU-clock (exactly one ce edge)
-assign mem_wr = (lat_type == BS_MEMW) && (t_state == ST_T3);
-assign io_wr  = (lat_type == BS_IOW)  && (t_state == ST_T3);
+// write strobes: level held across T3 and any Tw. At zero waits there is no Tw
+// so this is the single-T3 pulse as before; under waits it holds the request so
+// the wait-stated sprite/tile RAM can commit the write at its own gate.
+assign mem_wr = (lat_type == BS_MEMW) && (t_state == ST_T3 || t_state == ST_TW);
+assign io_wr  = (lat_type == BS_IOW)  && (t_state == ST_T3 || t_state == ST_TW);
 
 // INTA acknowledge: level held during T3 of the second INTA cycle
 assign int_ack = (lat_type == BS_INTA) && inta_second && (t_state == ST_T3);

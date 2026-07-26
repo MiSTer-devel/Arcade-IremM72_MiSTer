@@ -26,6 +26,7 @@ module board_b_d (
 
     output [15:0] DOUT,
     output DOUT_VALID,
+    output bg_ready,   // low while a pending CPU tile write awaits its layer's SH window
 
     input [15:0] DIN,
     input [19:0] A,
@@ -88,6 +89,11 @@ wire WRB = MWR & b_memrq;
 wire RDA = MRD & a_memrq;
 wire RDB = MRD & b_memrq;
 
+// Per-layer CPU-write ready (the addressed layer holds it low until its SH
+// window); only the layer with WR high can be busy, so AND is correct.
+wire a_wr_ready, b_wr_ready;
+assign bg_ready = a_wr_ready & b_wr_ready;
+
 wire VSCKA = IOWR & (IO_A[7:6] == 2'b10) & (IO_A[3:1] == 3'b000);
 wire HSCKA = IOWR & (IO_A[7:6] == 2'b10) & (IO_A[3:1] == 3'b001);
 wire VSCKB = IOWR & (IO_A[7:6] == 2'b10) & (IO_A[3:1] == 3'b010);
@@ -140,6 +146,7 @@ board_b_d_layer #(.SS_IDX_RAM0(SSIDX_LAYER_A_RAM0)) layer_a(
     .A(A),
     .RD(RDA),
     .WR(WRA),
+    .wr_ready(a_wr_ready),
 
     .IO_DIN(IO_DIN),
     .IO_BE(IO_BE),
@@ -184,6 +191,7 @@ board_b_d_layer #(.SS_IDX_RAM0(SSIDX_LAYER_B_RAM0)) layer_b(
     .A(A),
     .RD(RDB),
     .WR(WRB),
+    .wr_ready(b_wr_ready),
 
     .IO_DIN(IO_DIN),
     .IO_BE(IO_BE),
