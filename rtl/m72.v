@@ -215,17 +215,19 @@ jtframe_frac_cen #(2) pixel_cen
     .cen({ce_pix_half, ce_pix})
 );
 
-// The mc8051 core executes roughly one instruction per cen, but a real 8751
-// takes 12 oscillator clocks per machine cycle.  Divide the 8MHz oscillator
-// rate by 12 (cen = 32M/48) so the MCU runs at authentic speed relative to
-// the cycle-accurate V30 - the dbreed i8751 handshake is timing sensitive.
-// TODO: scale the 57/60Hz alternates the same way (n/m are 10-bit, needs
-// reduced fractions).
+// nu8051 takes one CE per oscillator period and does 12 CE ticks per machine
+// cycle internally, so ce_mcu is now the true 8MHz oscillator rate (32M/4),
+// not the machine-cycle rate the old Oregano core wanted - the delayed_ce
+// hack is gone.  The base fraction is n/m = 1/4; the 57/60Hz alternates keep
+// the same 12x-faster ratio as the old m=50/52 (i.e. 12/50 and 12/52, reduced
+// to 6/25 and 3/13) so the MCU stays locked to the video-timing-scaled clock.
+wire [9:0] mcu_cen_n = video_timing == VIDEO_57HZ ? 10'd6 : video_timing == VIDEO_60HZ ? 10'd3  : 10'd1;
+wire [9:0] mcu_cen_m = video_timing == VIDEO_57HZ ? 10'd25 : video_timing == VIDEO_60HZ ? 10'd13 : 10'd4;
 jtframe_frac_cen #(2) mcu_cen
 (
     .clk(CLK_32M),
-    .n(10'd1),
-    .m(video_timing == VIDEO_57HZ ? 10'd50 : video_timing == VIDEO_60HZ ? 10'd52 : 10'd48),
+    .n(mcu_cen_n),
+    .m(mcu_cen_m),
     .cen({ce_mcu_half, ce_mcu_nopause})
 );
 
@@ -993,7 +995,7 @@ wire mcu_ram_int;
 wire mcu_ram_cs;
 wire [7:0] mcu_sample_out;
 
-dualport_mailbox_2kx16 mcu_shared_ram(
+dualport_mailbox_2kx16 #(.SS_IDX(SSIDX_MCU_MAILBOX)) mcu_shared_ram(
     .reset(~reset_n),
     .clk_l(CLK_32M),
     .addr_l(cpu_mem_addr[11:1]),
@@ -1009,13 +1011,15 @@ dualport_mailbox_2kx16 mcu_shared_ram(
     .din_r(mcu_ram_dout),
     .dout_r(mcu_ram_din),
     .we_r(mcu_ram_we),
-    .int_r(mcu_ram_int)
+    .int_r(mcu_ram_int),
+
+    .ssbus(ssb[SSIDX_MCU_MAILBOX])
 );
 
 wire [7:0] mculatch_data = board_cfg.main_mculatch ? cpu_dout[7:0] : snd_io_data;
 wire mculatch_en = board_cfg.main_mculatch ? ( IOWR && cpu_mem_addr[7:1] == 7'h60 && cpu_be[0] ) : ( snd_io_req && snd_io_addr == 8'h82 );
 
-mcu mcu(
+mcu #(.SS_IDX(SSIDX_MCU_CPU), .SS_IDX_EMU(SSIDX_MCU_EMU)) mcu(
     .CLK_32M(CLK_32M),
     .ce_8m(ce_mcu),
     .reset(~reset_n),
@@ -1046,7 +1050,10 @@ mcu mcu(
     .bram_offsets_cs(bram_cs[2]),
     .bram_protect_cs(bram_cs[3]),
 
-    .dbg_rom_addr(mcu_dbg_rom_addr)
+    .dbg_rom_addr(mcu_dbg_rom_addr),
+
+    .ssbus(ssb[SSIDX_MCU_CPU]),
+    .ssbus_emu(ssb[SSIDX_MCU_EMU])
 );
 
 wire [1:0] z80_sample_addr_wr, mcu_sample_addr_wr;
@@ -1055,7 +1062,7 @@ wire [7:0] sample_rom_data;
 wire [7:0] z80_sample_out;
 wire z80_sample_inc, mcu_sample_inc;
 
-sample_rom sample_rom(
+sample_rom #(.SS_IDX(SSIDX_SAMPLE)) sample_rom(
     .clk(CLK_32M),
     .sample_addr_in(m84 ? z80_sample_addr : mcu_sample_addr),
     .sample_addr_wr(m84 ? z80_sample_addr_wr : mcu_sample_addr_wr),
@@ -1067,7 +1074,9 @@ sample_rom sample_rom(
     .bram_wr(bram_wr),
     .bram_data(bram_data),
     .bram_addr(bram_addr),
-    .bram_cs(bram_cs[1])
+    .bram_cs(bram_cs[1]),
+
+    .ssbus(ssb[SSIDX_SAMPLE])
 );
 
 wire [7:0] signed_mcu_sample = ( m84 ? z80_sample_out : mcu_sample_out ) - 8'h80;

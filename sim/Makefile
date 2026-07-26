@@ -17,7 +17,7 @@ GAME ?= hharryu
 VERILATOR = verilator
 VERILATOR_ARGS = --cc --make gmake --trace-fst --vpi --Mdir $(VERILATED_DIR) --MMD --MP \
 				-CFLAGS -Wno-unknown-warning-option \
-				-DV30_BACKDOOR +incdir+../rtl/v30 \
+				-DV30_BACKDOOR +incdir+../rtl/v30 +incdir+../rtl/nu8051 \
 				-Wno-TIMESCALEMOD \
 				-Wno-WIDTHEXPAND -Wno-WIDTHTRUNC \
 				-Wno-CASEINCOMPLETE -Wno-UNUSEDSIGNAL
@@ -78,9 +78,9 @@ endif
 
 LDLIBS=$(shell pkg-config --libs sdl2) $(CAPSTONE_LIBS)
 
-# Verilog netlist generated from the VHDL mc8051 MCU (checked in; see rtl_gen/README.md).
-# The V30 is now native SystemVerilog (rtl/v30/*.sv), no netlist needed.
-NETLISTS = rtl_gen/mc8051_core.v
+# The V30 and the nu8051 MCU are now native SystemVerilog (rtl/v30/*.sv,
+# rtl/nu8051/*.sv), no netlist needed. No generated netlists remain.
+NETLISTS =
 
 # ddr_debug.sv first: it declares the file-scope ddr_debug_data_t typedef
 HDL_SRC  = ../rtl/ddr_debug.sv ../rtl/m72_pkg.sv
@@ -89,6 +89,12 @@ HDL_SRC += ../rtl/savestates.sv ../rtl/ddram.sv ../rtl/memory_stream.sv ../rtl/r
 # V30 core (package first) + bus adapter
 HDL_SRC += ../rtl/v30/v30_ss_pkg.sv ../rtl/v30/v30_biu.sv ../rtl/v30/v30_eu.sv
 HDL_SRC += ../rtl/v30/v30_core.sv ../rtl/v30/v30_bus.sv
+# nu8051 MCU core (package first)
+HDL_SRC += ../rtl/nu8051/nu8051_ss_pkg.sv ../rtl/nu8051/nu8051_core.sv
+HDL_SRC += ../rtl/nu8051/nu8051_seq.sv ../rtl/nu8051/nu8051_alu.sv
+HDL_SRC += ../rtl/nu8051/nu8051_iram.sv ../rtl/nu8051/nu8051_sfr.sv
+HDL_SRC += ../rtl/nu8051/nu8051_ports.sv ../rtl/nu8051/nu8051_timer.sv
+HDL_SRC += ../rtl/nu8051/nu8051_uart.sv ../rtl/nu8051/nu8051_irq.sv
 HDL_SRC += ../rtl/m72.v ../rtl/m72_pic.sv ../rtl/pal.sv
 HDL_SRC += ../rtl/kna70h015.sv ../rtl/kna91h014.v ../rtl/kna6034201.v
 HDL_SRC += ../rtl/board_b_d.sv ../rtl/board_b_d_layer.sv ../rtl/board_b_d_sdram.sv

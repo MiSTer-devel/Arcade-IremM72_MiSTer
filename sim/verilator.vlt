@@ -23,6 +23,9 @@ lint_off -rule REALCVT        // constant real->int conversions in params
 
 // Make internal storage of the BRAM models public so the C++ harness can
 // inspect/patch RAM contents directly (hex editors, DebugLink).
+// nu8051 core keeps its 256B IRAM inside the core (nu8051_iram u_iram);
+// expose its array for the MCU_RAM memory view.
+public -module "nu8051_iram" -var "mem"
 public -module "dpramv" -var "ram"
 public -module "dpramv_cen" -var "ram"
 public -module "dualport_ram_unreg" -var "ram"

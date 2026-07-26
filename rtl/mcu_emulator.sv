@@ -18,10 +18,17 @@
 //  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 //============================================================================
 
-module mcu_emulator(
+module mcu_emulator #(
+    parameter SS_IDX = -1
+) (
     input CLK_32M,
     input ce_8m,
     input reset,
+
+    // savestate: SSIDX_MCU_EMU - the runtime-mutated regs only (the load-time
+    // offset/protection tables and sample_offsets_count persist across
+    // save/load and are excluded).
+    ssbus_if.slave ssbus,
 
     output active,
 
@@ -58,6 +65,13 @@ reg [5:0] sample_offsets_count = 0;
 reg [23:0] sample_offsets[64];
 reg sample_playing = 0;
 reg [9:0] sample_counter = 0;
+
+// Savestate write strobe (frozen under pause, so restore never races a live
+// update in either state block below).
+wire ss_wr = ssbus.access(SS_IDX) & ssbus.write;
+
+// hoisted from the FSM always block so it can be snapshotted (word 2)
+reg [15:0] ptr;
 
 // 18 byte checksum, followed by up to 110 bytes of x86 code
 reg [7:0] protection_data[128];
@@ -112,10 +126,21 @@ always @(posedge CLK_32M or posedge reset) begin
                 sample_playing <= 1;
             end
         end
+
+        // Savestate restore of the clk-owned sample-path regs.
+        if (ss_wr) begin
+            case (ssbus.addr)
+            32'd0: sample_addr[15:0]  <= ssbus.data[15:0];
+            32'd1: sample_addr[17:16] <= ssbus.data[1:0];
+            32'd3: { sample_playing, sample_counter } <= ssbus.data[10:0];
+            32'd4: sample_out <= ssbus.data[7:0];
+            default: ;
+            endcase
+        end
     end
 end
 
-enum {
+typedef enum {
     INIT,
     WAIT_FOR_INT,
     XOR_DATA,
@@ -124,10 +149,10 @@ enum {
     WAIT_FOR_INT2,
     WRITE_CHECKSUM,
     DONE
-} state = INIT;
+} emu_state_t;
+emu_state_t state = INIT;
 
 always @(posedge CLK_32M or posedge reset) begin
-    reg [15:0] ptr;
     if (reset) begin
         state <= INIT;
         ext_ram_cs <= 0;
@@ -211,7 +236,38 @@ always @(posedge CLK_32M or posedge reset) begin
             
             DONE: begin
             end
-                
+
+            endcase
+        end
+
+        // Savestate restore of the FSM-owned regs (state, ptr).
+        if (ss_wr) begin
+            case (ssbus.addr)
+            32'd2: ptr   <= ssbus.data[15:0];
+            32'd5: state <= emu_state_t'(ssbus.data[2:0]);
+            default: ;
+            endcase
+        end
+    end
+end
+
+// Savestate slave protocol: 6 discrete words over the runtime regs.  Writes
+// land in the two state blocks above (single driver per reg); this block
+// enumerates, reads and acks.
+always @(posedge CLK_32M) begin
+    ssbus.setup(SS_IDX, 6, 1);
+
+    if (ssbus.access(SS_IDX)) begin
+        if (ssbus.write) begin
+            ssbus.write_ack(SS_IDX);
+        end else if (ssbus.read) begin
+            case (ssbus.addr)
+            32'd0: ssbus.read_response(SS_IDX, { 48'd0, sample_addr[15:0] });
+            32'd1: ssbus.read_response(SS_IDX, { 62'd0, sample_addr[17:16] });
+            32'd2: ssbus.read_response(SS_IDX, { 48'd0, ptr });
+            32'd3: ssbus.read_response(SS_IDX, { 53'd0, sample_playing, sample_counter });
+            32'd4: ssbus.read_response(SS_IDX, { 56'd0, sample_out });
+            default: ssbus.read_response(SS_IDX, { 61'd0, 3'(state) });
             endcase
         end
     end

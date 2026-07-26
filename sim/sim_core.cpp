@@ -117,7 +117,7 @@ void SimCore::Init()
     SetMemory(MemoryRegion::SAMPLE_ROM,
               std::make_unique<Memory8b>(syms->TOP__sim_top__m72_inst__sample_rom__sample_rom.ram.m_storage, 131072));
     SetMemory(MemoryRegion::MCU_RAM,
-              std::make_unique<Memory8b>(syms->TOP__sim_top__m72_inst__mcu__internal_ram.ram.m_storage, 128));
+              std::make_unique<Memory8b>(syms->TOP__sim_top__m72_inst__mcu__nu8051__u_iram.mem.m_storage, 256));
     SetMemory(MemoryRegion::MCU_ROM,
               std::make_unique<Memory8b>(syms->TOP__sim_top__m72_inst__mcu__prom.ram.m_storage, 8192));
     SetMemory(MemoryRegion::MCU_SHARED_RAM,

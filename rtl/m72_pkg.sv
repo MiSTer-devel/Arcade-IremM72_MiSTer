@@ -85,8 +85,12 @@ package m72_pkg;
     parameter int SSIDX_CRTC          = 22;  // kna70h015
     parameter int SSIDX_PIC           = 23;  // m72_pic
     parameter int SSIDX_JT51          = 24;  // jt51_auto_ss via auto_save_adaptor2
-    parameter int SSIDX_VERSION       = 25;  // build stamp
-    parameter int SSIDX_COUNT         = 26;
+    parameter int SSIDX_MCU_CPU       = 25;  // nu8051 core (linear SS window) + wrapper glue, rtl/mcu.sv
+    parameter int SSIDX_MCU_MAILBOX   = 26;  // dualport_mailbox 2Kx16 + int handshake
+    parameter int SSIDX_SAMPLE        = 27;  // sample_rom 18-bit playback pointer
+    parameter int SSIDX_MCU_EMU       = 28;  // mcu_emulator HLE runtime regs
+    parameter int SSIDX_VERSION       = 29;  // build stamp
+    parameter int SSIDX_COUNT         = 30;
 
     // DDR window for savestate slots: 4 slots x 4MB from this base
     // (save_state_data hardcodes index * 0x400000, length 0x400000)

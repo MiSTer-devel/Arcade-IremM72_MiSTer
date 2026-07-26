@@ -37,7 +37,17 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/v30/v30_eu.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/v30/v30_core.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/v30/v30_bus.sv
 
-set_global_assignment -name QIP_FILE rtl/8051/mc8051.qip
+set_global_assignment -name SEARCH_PATH rtl/nu8051
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/nu8051/nu8051_ss_pkg.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/nu8051/nu8051_core.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/nu8051/nu8051_seq.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/nu8051/nu8051_alu.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/nu8051/nu8051_iram.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/nu8051/nu8051_sfr.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/nu8051/nu8051_ports.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/nu8051/nu8051_timer.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/nu8051/nu8051_uart.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/nu8051/nu8051_irq.sv
 
 if (1) {
     set_global_assignment -name VERILOG_MACRO "USE_AUTO_SS=1"
