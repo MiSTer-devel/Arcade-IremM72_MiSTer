@@ -25,11 +25,29 @@ SRCS_FULL = \
 
 SRCS = $(filter-out %_auto_ss.sv,$(SRCS_FULL))
 
+PROJECT_FILES = Arcade-IremM72.qsf Arcade-IremM72-Fast.qsf Arcade-IremM72.qpf
+
+# quartus_sh --flow compile saves the project on the way out, which appends
+# every resolved assignment - the whole of files.qip and sys/sys.tcl - inline
+# after the `source files.qip` line that already provides them. That stale copy
+# then silently overrides the real files.qip: it is what re-added jt51.qip
+# after the jt51_auto_ss switch and broke the build with duplicate modules.
+# Snapshot the project files and restore them once the flow is done, so
+# files.qip stays the single source of truth. Deliberate .qsf edits made before
+# the build survive; only Quartus' write-back is undone.
+define quartus_compile
+	@for f in $(PROJECT_FILES); do cp "$$f" "$$f.premake"; done
+	-@$(QUARTUS_DIR)/quartus_sh --flow compile $(PROJECT) -c $(1); \
+	  status=$$?; \
+	  for f in $(PROJECT_FILES); do mv "$$f.premake" "$$f"; done; \
+	  exit $$status
+endef
+
 $(OUTDIR)/Arcade-IremM72-Fast.rbf: $(SRCS)
-	$(QUARTUS_DIR)/quartus_sh --flow compile $(PROJECT) -c Arcade-IremM72-Fast
+	$(call quartus_compile,Arcade-IremM72-Fast)
 
 $(OUTDIR)/Arcade-IremM72.rbf: $(SRCS)
-	$(QUARTUS_DIR)/quartus_sh --flow compile $(PROJECT) -c Arcade-IremM72
+	$(call quartus_compile,Arcade-IremM72)
 
 rbf: $(OUTDIR)/$(CONFIG).rbf
 
