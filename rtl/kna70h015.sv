@@ -91,13 +91,14 @@ V.Sync Pulse     = 384us (6)
 */
 
 always @(posedge CLK_32M) begin
-    // Savestate restore writes take priority for the one clock they land on;
-    // the counters free-run during pause, so the write must win outright.
+    // The video timing counters (v_count/h_count) are FREE-RUNNING and are
+    // deliberately NOT saved or restored: forcing them to a stored value on
+    // restore desyncs the video output (the scaler/display keep their own
+    // timing). Only the CPU-programmed interrupt line and the interrupt latch
+    // round-trip through the savestate; the counters are left to free-run.
     if (ssbus.access(SS_IDX) & ssbus.write) begin
-        case (ssbus.addr[1:0])
-        2'd0: v_count <= ssbus.data[8:0];
-        2'd1: h_count <= ssbus.data[9:0];
-        2'd2: h_int_line <= ssbus.data[8:0];
+        case (ssbus.addr[0])
+        1'd0: h_int_line <= ssbus.data[8:0];
         default: int_d_latch <= ssbus.data[0];
         endcase
     end else begin
@@ -120,16 +121,14 @@ end
 
 // Savestate slave: enumeration, reads and acks (writes live above)
 always @(posedge CLK_32M) begin
-    ssbus.setup(SS_IDX, 4, 1);
+    ssbus.setup(SS_IDX, 2, 1);   // h_int_line + int_d_latch only (no free-run counters)
 
     if (ssbus.access(SS_IDX)) begin
         if (ssbus.write) begin
             ssbus.write_ack(SS_IDX);
         end else if (ssbus.read) begin
-            case (ssbus.addr[1:0])
-            2'd0: ssbus.read_response(SS_IDX, { 55'd0, v_count });
-            2'd1: ssbus.read_response(SS_IDX, { 54'd0, h_count });
-            2'd2: ssbus.read_response(SS_IDX, { 55'd0, h_int_line });
+            case (ssbus.addr[0])
+            1'd0: ssbus.read_response(SS_IDX, { 55'd0, h_int_line });
             default: ssbus.read_response(SS_IDX, { 63'd0, int_d_latch });
             endcase
         end
