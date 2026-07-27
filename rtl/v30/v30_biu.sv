@@ -1,6 +1,6 @@
 //============================================================================
 // Imported from nec_test (https://github.com/.../nec_test)
-// Source: hdl/rtl/core, commit 2c7ceab7084d35dd56395b3b9d6fca473446dc73
+// Source: hdl/rtl/core, commit 650dc971cb170d7fd27c073049be99b1c1bbb278
 // Cycle-accurate NEC V30 (uPD70116) max-mode core, verified vs golden traces.
 // Do not hand-edit; re-import from upstream. No license header upstream (same author).
 //============================================================================
@@ -1015,6 +1015,34 @@ always @(*) begin
     if (state == ST_TI && nxt_live) assert (!slot_fire);
     if (state == ST_T4 && !defer_t4 && nxt_live) assert (!slot_fire);
 end
+
+// A direct commit's scheduled ST_T1 must survive the WHOLE always_ff edge.
+// The canonical dispatch runs at the TOP of each state branch, so any later
+// unconditional `state <=` in the same branch wins the same-edge NBA race
+// and the committed cycle is silently swallowed with cur_* already loaded
+// (the R6c ff_t4 regression, task #28). Checked the cycle after every
+// direct fire; cleared on savestate writes and reset (both may legally
+// force ST_TI).
+reg dbg_direct_q;
+always_ff @(posedge clk)
+    if (ss_we || srst) dbg_direct_q <= 1'b0;
+    else if (ce)       dbg_direct_q <= slot_fire && slot_mode == COMMIT_DIRECT;
+always @(*) if (dbg_direct_q) assert (state == ST_T1);
+
+// Far-flush slot coverage (task #28). The ff_t4 direct commit was
+// unreachable in every standing suite when the R6c ordering regression
+// landed, so its breakage was invisible to green gates. These counters
+// make far-flush tranche coverage checkable (non-vacuous), mirroring the
+// Family-5/7 cov_* idiom; the TB prints them in its cov line.
+reg [31:0] cov_ff_t4;   // SLOT_FF_T4 direct commits (far flush on prefetch T4)
+reg [31:0] cov_ff_ti;   // SLOT_FF_TI direct commits (far flush at idle Ti)
+initial begin
+    cov_ff_t4 = 0; cov_ff_ti = 0;
+end
+always @(posedge clk) if (ce && slot_fire) begin
+    if (slot_id == SLOT_FF_T4) cov_ff_t4 <= cov_ff_t4 + 1;
+    if (slot_id == SLOT_FF_TI) cov_ff_ti <= cov_ff_ti + 1;
+end
 `endif
 `endif
 
@@ -1566,7 +1594,14 @@ always_ff @(posedge clk) begin
                     nxt_valid  <= 1'b0;
                 end else begin
                     `SLOT_CHK(slot_fire == (q_flush && cur_fetch && pick_any));
-                    state <= ST_TI;
+                    // ff_t4 direct commit: enter_t1_direct() in the dispatch
+                    // above has already scheduled ST_T1 this edge; an
+                    // unconditional idle entry here would win the same-edge
+                    // NBA race and swallow the redirect's first fetch (the
+                    // R6c ordering regression, task #28). Idle entry belongs
+                    // to the staged/teardown paths only.
+                    if (!(slot_fire && slot_mode == COMMIT_DIRECT))
+                        state <= ST_TI;
                     // NOTE: no commit evaluation at the T4 edge of a
                     // zero-wait cycle (measured) - EXCEPT a flush
                     // redirect at a prefetch T4, which commits

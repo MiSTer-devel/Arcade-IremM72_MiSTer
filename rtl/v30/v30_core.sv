@@ -1,6 +1,6 @@
 //============================================================================
 // Imported from nec_test (https://github.com/.../nec_test)
-// Source: hdl/rtl/core, commit 2c7ceab7084d35dd56395b3b9d6fca473446dc73
+// Source: hdl/rtl/core, commit 650dc971cb170d7fd27c073049be99b1c1bbb278
 // Cycle-accurate NEC V30 (uPD70116) max-mode core, verified vs golden traces.
 // Do not hand-edit; re-import from upstream. No license header upstream (same author).
 //============================================================================
