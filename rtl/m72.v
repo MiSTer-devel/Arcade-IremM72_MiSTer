@@ -191,7 +191,13 @@ always @(posedge CLK_32M) begin
             // in lockstep with the bursty catch-up V30, holding the shared-RAM
             // protection handshake at a constant V30<->MCU phase relationship
             // (the effect MAME gets from synchronize() on every MCU dpram write).
-            ce_mcu      <= reset_n & ~ce_cpu_count[0];
+            // NOT gated by reset_n: the nu8051 has a SYNCHRONOUS reset (min 24 CE
+            // ticks with RESET asserted), so ce_mcu must keep ticking during reset
+            // or the MCU never processes it. On power-up RESET is held past reset_n
+            // (via ~valid_rom during ROM load) so it reset anyway, but a reset-button
+            // reset asserts RESET only while reset_n is low - exactly when ce_mcu
+            // used to be 0 - leaving the MCU un-reset and protection games wedged.
+            ce_mcu      <= ~ce_cpu_count[0];
             ce_cpu_count <= ce_cpu_count + 11'd1;
         end
     end
