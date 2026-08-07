@@ -259,6 +259,14 @@ bool SimState::RestoreState(const char *filename)
     if (!TickUntilStateCondition(mTop, "restore", "state machine idle", [&] { return mTop->ss_state_out == 0; }))
         return false;
 
+    if (mTop->rootp->vlSymsp->TOP__sim_top__m72_inst.v30__DOT__ss_err)
+    {
+        std::fprintf(stderr,
+                     "[sim-state] restore rejected: incompatible V30 savestate map\n");
+        std::fflush(stderr);
+        return false;
+    }
+
     {
         uint64_t fileVer = mTop->rootp->vlSymsp->TOP__sim_top__m72_inst.ss_restored_version;
         // SV string literals are packed big-endian (first char in the high byte);

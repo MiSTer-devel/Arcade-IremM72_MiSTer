@@ -37,6 +37,7 @@ module board_b_d (
 
     input MRD,
     input MWR,
+    input MWR_WAIT,
     input IORD,
     input IOWR,
     input a_memrq,
@@ -86,6 +87,8 @@ import m72_pkg::*;
 // Didn't implement WAIT signal
 wire WRA = MWR & a_memrq;
 wire WRB = MWR & b_memrq;
+wire WRA_WAIT = MWR_WAIT & a_memrq;
+wire WRB_WAIT = MWR_WAIT & b_memrq;
 wire RDA = MRD & a_memrq;
 wire RDB = MRD & b_memrq;
 
@@ -146,6 +149,7 @@ board_b_d_layer #(.SS_IDX_RAM0(SSIDX_LAYER_A_RAM0)) layer_a(
     .A(A),
     .RD(RDA),
     .WR(WRA),
+    .WR_WAIT(WRA_WAIT),
     .wr_ready(a_wr_ready),
 
     .IO_DIN(IO_DIN),
@@ -191,6 +195,7 @@ board_b_d_layer #(.SS_IDX_RAM0(SSIDX_LAYER_B_RAM0)) layer_b(
     .A(A),
     .RD(RDB),
     .WR(WRB),
+    .WR_WAIT(WRB_WAIT),
     .wr_ready(b_wr_ready),
 
     .IO_DIN(IO_DIN),
@@ -269,6 +274,5 @@ assign GREEN = en_palette ? g_out : b_opaque ? { BITB, BITB[3] } : { BITA, BITA[
 assign BLUE = en_palette ? b_out : b_opaque ? { BITB, BITB[3] } : { BITA, BITA[3] };
 
 endmodule
-
 
 

@@ -68,7 +68,7 @@ package m72_pkg;
     // game doesn't use (MCU, samples, mailbox) has no section.
     parameter int SSIDX_GLOBAL        = 0;   // m72.v: sys_flags, CE counters, paused_v/h
     parameter int SSIDX_WORK_RAM      = 1;   // 64K x 16 CPU work RAM
-    parameter int SSIDX_V30           = 2;   // 202 x 16 v30_core register file
+    parameter int SSIDX_V30           = 2;   // 228 x 16 v30_core ucore register file
     parameter int SSIDX_Z80           = 3;   // tv80_auto_ss via auto_save_adaptor2
     parameter int SSIDX_SOUND_RAM     = 4;   // 64KB Z80 program/work RAM
     parameter int SSIDX_SOUND_REGS    = 5;

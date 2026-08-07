@@ -17,7 +17,7 @@ gathers the sections into a chunked stream in a DDR window (4 slots x 4MB at
    timeout — sections that don't answer are skipped) and streams them into the
    DDR slot.
 3. On restore the stream is scattered back; the V30's full architectural and
-   micro state is written through its 202-entry SS register file
+   micro state is written through its 228-entry ucore SS register file
    (`rtl/v30/v30_bus.sv` slave), the Z80 through the generated
    `tv80_auto_ss.sv` (`auto_save_adaptor2`), and everything else through
    per-module slaves. A short drain satisfies the V30's write-staging
@@ -30,6 +30,11 @@ See `SSIDX_*` in `rtl/m72_pkg.sv`: work RAM, V30 regfile, Z80, sound RAM +
 latches, sprite buffer/table/DMA state, both tilemap layers (VRAM + scroll
 regs), palettes, CRTC counters, interrupt controller, and a build-version
 stamp that round-trips through the file.
+
+The ucore CPU map has tag/version `0x8E` and is not compatible with states
+created by the previous FSM-based V30 implementation. Create new states after
+upgrading the core; an older CPU section raises the V30 SS error, its payload
+is discarded, and the simulator reports `load_failed`.
 
 ## Simulator
 

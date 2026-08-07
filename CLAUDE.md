@@ -38,7 +38,8 @@ custom-chip reverse engineering.
   Instantiates the core.
 - **`rtl/m72.v` (`m72`)** — the actual arcade board. Wires together the CPU, video boards,
   sprite engine, sound, MCU, and interrupt controller. Start here to understand the core.
-- **CPU**: NEC V30 in `rtl/v30/` (VHDL, based on RobertPeip's v30mz). `rtl/pal.sv`
+- **CPU**: microcode-ROM-driven NEC V30 ucore in `rtl/v30/`, imported from
+  `nec_test`; `v30_bus.sv` adapts its multiplexed maximum-mode pins. `rtl/pal.sv`
   (`address_translator`) decodes the CPU address/IO space into region requests and control
   strobes — this is the memory map.
 - **Video**: `rtl/kna70h015.sv` generates video timing (H/V counters, blanking, interrupts).
@@ -78,9 +79,8 @@ the relevant `.mra`.
   Build with `cd sim && make sim` (homebrew verilator + sdl2; capstone optional).
   Runs games from `roms/` zips via the loader-format MRAs in `releases/` (the MRAs under
   `docs/` are the old flat format and do NOT work with `rtl/rom.sv`). Headless JSON server
-  mode (`./sim --server`) for scripted testing. The three VHDL CPU cores are used as
-  pre-generated Verilog netlists in `sim/rtl_gen/` (Verilator can't compile VHDL);
-  regenerate with `make netlists` after sourcing `~/oss-cad-suite/environment`.
+  mode (`./sim --server`) for scripted testing. The V30 and nu8051 cores are
+  native SystemVerilog and are compiled directly by Verilator.
   Key sim-vs-hardware notes: `rtl/sdram.sv` channels use edge-detected req + 1-cycle rdy
   pulse (modeled in `sim/sim_sdram.h`); `ioctl_wr` must pulse one clk_sys cycle per byte.
 

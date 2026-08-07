@@ -1,0 +1,78 @@
+{
+  "generator": "sw/gen_ucore_tables.py",
+  "sources": {
+    "docs/V20BITS.TXT": "sha256:ecd09bf03a8868400dd7e75fe38a59a3f27699638362cbc5a4bee102237bcf4b",
+    "docs/pla3_outputs.txt": "sha256:d4eab9e854fb59c676f38d66cbd447100e66d1d8cf69719d251ec0ae2a9ba753"
+  },
+  "normative_spec": "docs/V20UCDIS.PAS (procedure ReadBits)",
+  "transliterated_from": "sim/ucrom.cpp (UcRom::load, UcRom::build_decode)",
+  "ucrom": {
+    "banks": 257,
+    "rows": 1028,
+    "row_width_bits": 29,
+    "match_addr_space": 8192,
+    "match_addr_mapped": 1656,
+    "match_addr_unmapped": 6536,
+    "ambiguous_count": 1,
+    "ambiguous": [
+      {
+        "addr": "0x1C08",
+        "pattern": "111.00000010.00",
+        "page": 7,
+        "opcode": "0x02",
+        "rowgrp": 0,
+        "bank_first_match": 119,
+        "bank_second_match": 120,
+        "resolved_native": 120,
+        "resolved_emu": 119,
+        "rows_native": [
+          "0x01E0",
+          "0x01E1",
+          "0x01E2",
+          "0x01E3"
+        ],
+        "rows_emu": [
+          "0x01DC",
+          "0x01DD",
+          "0x01DE",
+          "0x01DF"
+        ],
+        "note": "the interrupt-acknowledge vector fetch (ucsim ledger R4). Exactly two activation patterns match and the 13 dumped address bits cannot separate them, so the real decoder takes a 14th input (8080-emulation mode). The generated ucdecode.hex is the NATIVE resolution = the SECOND matching pattern, byte-identical to sim/ucrom.h::bank_of(emu=false). The emulation-mode alternative is recorded here, NOT emitted: ucore has no BRKEM path at U0 and a second table would be dead silicon."
+      }
+    ],
+    "upc_width_bits": 15,
+    "upc_space": 32768,
+    "pageopc_with_any_mapping": 1275,
+    "pageopc_bank_varies_with_rowgrp": 241
+  },
+  "pla3": {
+    "tables": 3,
+    "entries_per_table": 256,
+    "width_bits": 14,
+    "total_entries": 768,
+    "nonzero": {
+      "native": 216,
+      "mode8080": 182,
+      "ext": 48
+    },
+    "distinct": {
+      "native": 42,
+      "mode8080": 14,
+      "ext": 5
+    }
+  },
+  "resource_arithmetic": {
+    "note": "M10K = 10240 bits. Split-table layout is what is emitted; the single fully-flat alternative is recorded for the U1 BRAM decision.",
+    "ucdecode_bits": 81920,
+    "ucrom_bits": 29812,
+    "split_total_bits": 111732,
+    "split_m10k_min": 10.91,
+    "fully_flat_upc_bits": 983040,
+    "fully_flat_m10k_min": 96.0
+  },
+  "artifacts": {
+    "ucrom.hex": "sha256:d9cfcddd4cb473f0c21f112bd64419e91d9395a256158e0205137e12ba3e531d",
+    "ucdecode.hex": "sha256:f5cf6e2bef1d3bec371d0b0227fb7cbcaaf62fd68f2ba3e505d345f492e08bda",
+    "pla3_tables.svh": "sha256:0d9693c01a289c7eb258ef9478c3405c93492417ee2cf42a28e4552360f61302"
+  }
+}

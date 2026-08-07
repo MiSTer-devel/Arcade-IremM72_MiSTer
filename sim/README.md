@@ -13,16 +13,8 @@ cd sim
 make sim          # builds ./sim
 ```
 
-The VHDL CPU cores (V30, mc8051 MCU) are compiled from pre-generated Verilog
-netlists in `rtl_gen/` — see `rtl_gen/README.md`.  The Z80 sound CPU is the
-native-Verilog tv80 (`rtl/tv80/`), compiled directly.
-Regenerating them (only needed when the VHDL changes) requires
-[oss-cad-suite](https://github.com/YosysHQ/oss-cad-suite-build):
-
-```sh
-source ~/oss-cad-suite/environment
-make netlists
-```
+The V30 ucore and nu8051 MCU are native SystemVerilog and are compiled
+directly. The Z80 sound CPU is the native-Verilog tv80 (`rtl/tv80/`).
 
 ## Running
 

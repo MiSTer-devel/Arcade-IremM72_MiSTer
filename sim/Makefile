@@ -15,10 +15,11 @@ USE_AUTO_SS = 1
 GAME ?= hharryu
 
 VERILATOR = verilator
-VERILATOR_ARGS = --cc --make gmake --trace-fst --vpi --Mdir $(VERILATED_DIR) --MMD --MP \
+VERILATOR_ARGS = --cc --make gmake --no-timing --trace-fst --vpi --Mdir $(VERILATED_DIR) --MMD --MP \
 				-CFLAGS -Wno-unknown-warning-option \
 				-DV30_BACKDOOR +incdir+../rtl/v30 +incdir+../rtl/nu8051 \
 				-Wno-TIMESCALEMOD \
+				-Wno-STMTDLY \
 				-Wno-WIDTHEXPAND -Wno-WIDTHTRUNC \
 				-Wno-CASEINCOMPLETE -Wno-UNUSEDSIGNAL
 
@@ -86,9 +87,11 @@ NETLISTS =
 HDL_SRC  = ../rtl/ddr_debug.sv ../rtl/m72_pkg.sv
 # Savestate infrastructure: ssbus_if/ddr_if interfaces + streamer + primitives
 HDL_SRC += ../rtl/savestates.sv ../rtl/ddram.sv ../rtl/memory_stream.sv ../rtl/ram.sv
-# V30 core (package first) + bus adapter
-HDL_SRC += ../rtl/v30/v30_ss_pkg.sv ../rtl/v30/v30_biu.sv ../rtl/v30/v30_eu.sv
-HDL_SRC += ../rtl/v30/v30_core.sv ../rtl/v30/v30_bus.sv
+# V30 ucore (package first) + microcode ROM + bus adapter
+HDL_SRC += ../rtl/v30/v30u_ss_pkg.sv ../rtl/v30/v30_core.sv
+HDL_SRC += ../rtl/v30/v30u_biu.sv ../rtl/v30/v30u_ucrom.sv ../rtl/v30/v30u_eu.sv
+HDL_SRC += ../rtl/v30/v30_bus.sv
+V30_UCORE_DEPS = $(wildcard ../rtl/v30/*.svh) ../rtl/v30/ucdecode.hex ../rtl/v30/ucrom.hex
 # nu8051 MCU core (package first)
 HDL_SRC += ../rtl/nu8051/nu8051_ss_pkg.sv ../rtl/nu8051/nu8051_core.sv
 HDL_SRC += ../rtl/nu8051/nu8051_seq.sv ../rtl/nu8051/nu8051_alu.sv
@@ -121,10 +124,10 @@ all: sim
 netlists:
 	scripts/gen_vhdl_netlists.sh
 
-$(VERILATED_DIR)/M72.mk: $(HDL_SRC) Makefile
+$(VERILATED_DIR)/M72.mk: $(HDL_SRC) $(V30_UCORE_DEPS) Makefile
 	$(VERILATOR) $(VERILATOR_ARGS) -o M72 --prefix M72 --top sim_top $(HDL_SRC)
 
-$(VERILATED_DIR)/M72__ALL.a: $(VERILATED_DIR)/M72.mk $(HDL_SRC)
+$(VERILATED_DIR)/M72__ALL.a: $(VERILATED_DIR)/M72.mk $(HDL_SRC) $(V30_UCORE_DEPS)
 	$(MAKE) -C $(VERILATED_DIR) -f M72.mk
 
 $(OBJ_DIR)/%.o: %.cpp

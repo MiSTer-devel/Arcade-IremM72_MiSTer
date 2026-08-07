@@ -29,6 +29,7 @@ module board_b_d_layer #(
     input [19:0] A,
     input RD,
     input WR,
+    input WR_WAIT,      // asserted from the T1 address latch for READY timing
     output wr_ready,   // low while a CPU write to this layer awaits its SH window
 
     input [15:0] IO_DIN,
@@ -197,11 +198,12 @@ wire [8:0] SH = ( ( m84 ? HE - 9'd4 : HE ) + adj_h ) ^ { 6'b0, {3{NL}} };
 reg [8:0] adj_v;
 reg [8:0] adj_h;
 
-// CPU tile-RAM write arbitration. The write is held off (via the shared v30
-// READY, deasserted while wr_ready is low) until SH[3] falls 1->0 - the slot
-// right after the tile load at SH[2:0]==3'b111. wr_serviced latches the single
+// CPU tile-RAM write arbitration. WR_WAIT arrives from the T1 address latch so
+// READY is low before the ucore's evaluation point; WR remains the T3/Tw data
+// commit strobe. The request is held until SH[3] falls 1->0 - the slot right
+// after the tile load at SH[2:0]==3'b111. wr_serviced latches the single
 // physical bank write so the READY release is robust against the CE_PIX-vs-ce
-// clock phase; A/DIN/WR are held stable by the stall for the whole wait.
+// clock phase; A/DIN remain stable for the whole wait.
 reg sh3_q;
 reg wr_serviced;
 wire wr_window = CE_PIX & sh3_q & ~SH[3];       // SH[3] falling edge
@@ -209,11 +211,11 @@ wire wr_commit = WR & wr_window & ~wr_serviced;  // exactly one bank write
 
 always @(posedge CLK_32M) begin
     if (CE_PIX) sh3_q <= SH[3];
-    if (!WR)            wr_serviced <= 1'b0;
+    if (!WR_WAIT)       wr_serviced <= 1'b0;
     else if (wr_commit) wr_serviced <= 1'b1;
 end
 
-assign wr_ready = ~WR | wr_serviced;
+assign wr_ready = ~WR_WAIT | wr_serviced;
 
 reg HREV1, VREV, HREV2;
 reg [15:0] COD;

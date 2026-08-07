@@ -132,6 +132,11 @@ reg [63:0] ss_glb_data;
 // DMA idle (TNSL) so every RAM port the savestate hijacks is inert.
 wire pause_rq_any = pause_rq | ss_pause;
 wire ss_quiesced = v30_ss_quiet & TNSL;
+// Once the ucore exposes a bus-quiet boundary during a savestate request,
+// stop issuing CPU phases immediately.  Otherwise its prefetcher can launch
+// another cycle before `paused` is registered, and tight code-fetch loops may
+// never leave SS_BUS_QUIET asserted long enough to acquire the pause.
+wire ss_cpu_quiesce = ss_pause & v30_ss_quiet;
 
 always @(posedge CLK_32M) begin
     if (pause_rq_any & ~paused) begin
@@ -180,7 +185,7 @@ always @(posedge CLK_32M) begin
     ce_cpu_half <= 0;
     ce_mcu <= 0;
 
-    if (~paused) begin
+    if (~paused && ~ss_cpu_quiesce) begin
         ce_steady_div <= ce_steady_div + 2'd1;
         if (&ce_steady_div) ce_steady_count <= ce_steady_count + 10'd1;
 
@@ -236,7 +241,7 @@ wire clock = CLK_32M;
  * adapter now: reads are levels (T1-half..T4), writes are held during T3. The
  * bus is word-aligned (cpu_mem_addr[0]==0) with per-byte enables in cpu_be, so
  * the old word_shuffle / cpu_word_* realignment machinery is gone. */
-wire mem_rd, mem_wr, io_rd, io_wr, code_fetch;
+wire mem_rd, mem_wr_pending, mem_wr, io_rd, io_wr, code_fetch;
 
 wire IOWR = io_wr; // IO Write
 wire IORD = io_rd; // IO Read
@@ -278,7 +283,7 @@ wire work_ram_memrq;
 // awaits its SH window. mem_rd/mem_wr and the region decodes are stable across
 // the whole (now possibly Tw-extended) bus cycle, so the READY level is stable.
 wire bg_ready;
-wire sprite_wait = sprite_memrq & ~TNSL & (mem_rd | mem_wr);
+wire sprite_wait = sprite_memrq & ~TNSL & (mem_rd | mem_wr_pending);
 wire v30_ready   = ~sprite_wait & bg_ready;
 
 reg mem_rq_active = 0;
@@ -657,6 +662,7 @@ v30_bus #(.SS_IDX(SSIDX_V30)) v30(
 
     .mem_rd(mem_rd),
     .io_rd(io_rd),
+    .mem_wr_pending(mem_wr_pending),
     .mem_wr(mem_wr),
     .io_wr(io_wr),
     .code_fetch(code_fetch),
@@ -674,7 +680,12 @@ assign ddr_debug_data.cpu_cs = 16'd0;
 assign ddr_debug_data.cpu_ip = 16'd0;
 assign ddr_debug_data.cpu_opcode = 8'd0;
 
-wire m_io = MRD | MWR;
+// The write address is valid before MWR reaches T3.  Include the pending
+// memory-write phase in the memory/IO address selection so the PAL can decode
+// a wait-generating tile/sprite target in time for the ucore's READY sample;
+// the translator's rd/wr inputs remain gated by the real bus strobes, so no
+// device commits a write during this early decode phase.
+wire m_io = MRD | MWR | mem_wr_pending;
 wire sprite_dma;
 wire [1:0] iset;
 wire [15:0] iset_data;
@@ -796,6 +807,7 @@ board_b_d board_b_d(
 
     .MRD(MRD),
     .MWR(MWR),
+    .MWR_WAIT(mem_wr_pending),
     .IORD(IORD),
     .IOWR(IOWR),
 

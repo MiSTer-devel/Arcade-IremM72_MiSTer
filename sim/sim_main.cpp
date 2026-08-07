@@ -17,6 +17,9 @@
 
 int main(int argc, char **argv)
 {
+    // Make Verilog plusargs available on the model's private context.
+    gSimCore.SetCommandArgs(argc, argv);
+
     bool serverMode = false;
     std::string target;
 

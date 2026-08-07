@@ -46,11 +46,18 @@ constexpr uint32_t DEBUG_LINK_OUT_AREA_OFF = 0x600;
 
 // SimCore implementation
 SimCore::SimCore()
-    : mTop(nullptr), mVideo(nullptr), mSDRAM(nullptr), mContextp(nullptr), mTotalTicks(0), mTraceActive(false),
+    : mTop(nullptr), mVideo(nullptr), mSDRAM(nullptr), mContextp(nullptr), mArgc(0), mArgv(nullptr),
+      mTotalTicks(0), mTraceActive(false),
       mTraceDepth(1), mSimulationRun(false), mSimulationStep(false), mSimulationStepSize(100000), mSimulationStepVblank(false),
       mSystemPause(false), mSimulationWpSet(false), mSimulationWpAddr(0), mSignalWatchpointCallback()
 {
     strcpy(mTraceFilename, "sim.fst");
+}
+
+void SimCore::SetCommandArgs(int argc, char **argv)
+{
+    mArgc = argc;
+    mArgv = argv;
 }
 
 SimCore::~SimCore()
@@ -61,6 +68,7 @@ SimCore::~SimCore()
 void SimCore::Init()
 {
     mContextp = new VerilatedContext;
+    mContextp->commandArgs(mArgc, mArgv);
     mTop = new M72{mContextp};
     mTfp = nullptr;
 

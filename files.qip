@@ -31,10 +31,11 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/ddram.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/savestate_ui.sv
 
 set_global_assignment -name SEARCH_PATH rtl/v30
-set_global_assignment -name SYSTEMVERILOG_FILE rtl/v30/v30_ss_pkg.sv
-set_global_assignment -name SYSTEMVERILOG_FILE rtl/v30/v30_biu.sv
-set_global_assignment -name SYSTEMVERILOG_FILE rtl/v30/v30_eu.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/v30/v30u_ss_pkg.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/v30/v30_core.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/v30/v30u_biu.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/v30/v30u_ucrom.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/v30/v30u_eu.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/v30/v30_bus.sv
 
 set_global_assignment -name SEARCH_PATH rtl/nu8051
@@ -61,4 +62,3 @@ if (1) {
     set_global_assignment -name VERILOG_FILE rtl/tv80/tv80_reg.v
     set_global_assignment -name QIP_FILE rtl/jt51/jt51.qip
 }
-

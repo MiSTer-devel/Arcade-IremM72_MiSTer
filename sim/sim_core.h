@@ -87,6 +87,7 @@ class SimCore
     ~SimCore();
 
     // Main simulation methods
+    void SetCommandArgs(int argc, char **argv);
     void Init();
     TickResult Tick(int count = 1);
     TickResult TickUntil(std::function<bool()> until, int limit);
@@ -145,6 +146,8 @@ class SimCore
   private:
     // Verilator context and top module
     VerilatedContext *mContextp;
+    int mArgc;
+    char **mArgv;
     std::unique_ptr<VerilatedFstC> mTfp;
     std::function<bool()> mSignalWatchpointCallback;
 

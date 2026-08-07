@@ -39,6 +39,7 @@ module v30_bus #(
     // access strobes
     output            mem_rd,      // level, T1-half .. T4 (CODE or MEMR)
     output            io_rd,       // level, T1-half .. T4 (IOR)
+    output            mem_wr_pending, // address-valid MEMW, for early READY generation
     output            mem_wr,      // level, held during T3 (MEMW)
     output            io_wr,       // level, held during T3 (IOW)
     output            code_fetch,  // current cycle is a prefetch (BS==CODE)
@@ -51,7 +52,7 @@ module v30_bus #(
     // full register file for the sim CPU window (zeros unless V30_BACKDOOR)
     output    [223:0] dbg_regs,
 
-    // savestate: streams the core's 202-entry SS register file
+    // savestate: streams the core's 228-entry SS register file
     ssbus_if.slave    ssbus,
     input             ss_restore_done, // pulse: reset this adapter to bus-idle
     output            ss_quiet         // core BIU is bus-quiet (safe to freeze)
@@ -69,7 +70,7 @@ localparam bit [2:0] BS_MEMR = 3'b101;
 localparam bit [2:0] BS_MEMW = 3'b110;
 localparam bit [2:0] BS_PASV = 3'b111;
 
-// T-state encoding (ST_TW value matches the BIU's, v30_biu.sv ST_TW=3'd4)
+// T-state encoding (ST_TW value matches the BIU's, v30u_biu.sv ST_TW=3'd4)
 localparam bit [2:0] ST_TI = 3'd0;
 localparam bit [2:0] ST_T1 = 3'd1;
 localparam bit [2:0] ST_T2 = 3'd2;
@@ -105,7 +106,13 @@ wire [8:0]  ss_core_addr = ss_addr_of(int'(ssbus.addr));
 wire [15:0] ss_core_rdata;
 reg  [1:0]  ss_rd_delay;
 reg         ss_wr_done;
-wire        ss_core_we = ssbus.access(SS_IDX) & ssbus.write & ~ss_wr_done;
+reg         ss_tag_reject;
+wire        ss_core_is_tag = (ss_core_addr == SSA_TAG);
+// Always pass the tag so a later compatible restore can clear a sticky
+// mismatch.  Once a bad tag is seen, acknowledge but discard the remainder
+// of that CPU section rather than loading an incompatible register map.
+wire        ss_core_we = ssbus.access(SS_IDX) & ssbus.write & ~ss_wr_done &
+                         (~ss_tag_reject | ss_core_is_tag);
 wire        ss_err /* verilator public_flat */;
 
 v30_core u_core (
@@ -118,6 +125,7 @@ v30_core u_core (
     .NMI        (1'b0),
     .POLL_N     (1'b1),
     .AD         (AD),
+    .AD_OE      (),
     .QS         (),
     .BS         (BS),
     .RD_N       (RD_N),
@@ -145,13 +153,19 @@ v30_core u_core (
 );
 
 //----------------------------------------------------------------------------
-// Savestate slave: 202 x 16-bit regfile entries streamed via the ssbus.
+// Savestate slave: the ucore's 228 x 16-bit regfile entries streamed via the
+// ssbus. The package supplies the dense index-to-address mapping.
 // Reads respect the 2-clk SS_ADDR->SS_RDATA staging; writes pulse SS_WE for
 // exactly one clk per entry (ss_wr_done holds it off while the master waits
 // for the ack to propagate through the mux).
 //----------------------------------------------------------------------------
 always_ff @(posedge clk) begin
     ssbus.setup(SS_IDX, v30_ss_pkg::SS_COUNT, 1);
+
+    if (reset)
+        ss_tag_reject <= 1'b0;
+    else if (ss_core_we && ss_core_is_tag)
+        ss_tag_reject <= (ssbus.data[15:0] != SS_TAG);
 
     if (ssbus.access(SS_IDX)) begin
         if (ssbus.write) begin
@@ -294,6 +308,12 @@ assign code_fetch = (lat_type == BS_CODE);
 // read strobes: level from T1-half through T3 (addr_valid), cleared at T4
 assign mem_rd = addr_valid && ((lat_type == BS_CODE) || (lat_type == BS_MEMR));
 assign io_rd  = addr_valid && (lat_type == BS_IOR);
+
+// The ucore evaluates READY before entering T3, so wait-generating devices
+// need to see a write request as soon as the T1 address has been latched.
+// Keep this separate from mem_wr: consumers must still commit writes only in
+// T3/Tw, when the core is driving valid write data.
+assign mem_wr_pending = addr_valid && (lat_type == BS_MEMW);
 
 // write strobes: level held across T3 and any Tw. At zero waits there is no Tw
 // so this is the single-T3 pulse as before; under waits it holds the request so

@@ -1,46 +1,41 @@
 //============================================================================
-// Imported from nec_test (https://github.com/.../nec_test)
-// Source: hdl/rtl/core, commit 650dc971cb170d7fd27c073049be99b1c1bbb278
-// Cycle-accurate NEC V30 (uPD70116) max-mode core, verified vs golden traces.
-// Do not hand-edit; re-import from upstream. No license header upstream (same author).
-//============================================================================
-
+// Imported from nec_test hdl/rtl/ucore at HEAD
+// 29dcc5b05fdc0bf6e72e05b0c309b859c9a41d20 (2026-08-07); the ucore
+// directory's last content change is 5403671558a5c20ff4036c6d59ebd06124f3fd78.
+// The M72 integration keeps this upstream module name and interface.
 //============================================================================
 //
-//  v30_core - cycle-accurate NEC V30 (uPD70116) CPU core, max mode
+//============================================================================
 //
-//  Campaign 3: EU + BIU verified against golden traces captured from the
-//  real chip (tests/v30/v0.1) via hdl/tb/tb_v30_core.sv / sw/check_core.py.
+//  v30_core (ucore) - the ROM-driven NEC V30 (uPD70116) core, max mode.
 //
-//  The port list mirrors the physical chip's maximum-mode pins as seen by
-//  the harness (hdl/rtl/nec_bus.sv), so Campaign 4 can instantiate this
-//  core behind the same nec_bus interface used for the socketed part:
-//    AD[19:0]  muxed address/data; AD[19:16] carry PS3-0 during T2-T4
-//    BS[2:0]   bus-cycle status (8086 S2-S0 compatible)
-//    QS[1:0]   queue status (00 none, 01 first byte, 10 flush, 11 byte)
-//    RD_N, UBE_N, BUSLOCK_N, READY, RESET, INT, NMI, POLL_N, CLK
+//  This is the ucore TOP.  It is a DROP-IN alternative to hdl/rtl/core/
+//  v30_core.sv: same module name, same port list, same package name
+//  (`v30_ss_pkg`, supplied here by hdl/rtl/ucore/v30u_ss_pkg.sv), so the two
+//  cores are selected by the RTL FILE LIST alone -- `sw/check_core.py
+//  --core {fsm,ucore}` and, later, hdl/files_ucore.qip.  hdl/tb/tb_v30_core.sv
+//  is not parameterised on the engine.
 //
-//  V30_BACKDOOR (verification only, set by the testbench build): adds
-//  state-injection/observation ports so golden test cases can start from
-//  an arbitrary architectural state without a load routine, plus a
-//  scripted queue-consumer mode that replaces the EU for BIU-only
-//  verification. The backdoor is compiled out of synthesis builds; the
-//  normal reset flow (vector fetch at FFFF0h) runs in synthesis builds
-//  (implemented in Campaign 3 mission G; see v30_biu's reset-vector
-//  sequencing note, boot-capture verified by sw/check_boot.py).
+//  Governance: hdl/rtl/ucore/README.md.  The correctness target is "identical
+//  to sim/ clock-for-clock"; the BIU below is a transliteration of
+//  sim/biu_timed.{h,cpp}, mechanism by mechanism.
 //
-//  INT/NMI/POLL, HALT, and wait states are now implemented (Campaign 3
-//  mission blocks 3-4). Still not implemented: BUSLOCK (BUSLOCK_N is
-//  tied high), and the deferred opcode families noted in the closure
-//  checkpoint (INM/OUTM 6C-6F, BRKEM/8080-emulation mode, the 0x82
-//  alias).
+//  STAGE U1: BIU only.  `v30u_eu` is a tied-off placeholder and the EU side is
+//  held inert exactly as the FSM core's scripted-consumer mode holds it.
+//
+//  SCRIPTED-CONSUMER MODE (V30_BACKDOOR, verification only).  `scr_en` hands
+//  the queue port to `scr_qop`, using the QS encoding as the command:
+//      2'b00  idle
+//      2'b01  pop, and this pop is an F (instruction first byte)
+//      2'b11  pop, and this pop is an S (subsequent byte)
+//      2'b10  FLUSH + redirect to bkd_cs : bkd_fetch_ip
+//  A pop is a DEMAND: it is served on the first clock the front byte is ripe,
+//  which is M8's `pop = max(demand, ready)`.  The FSM core's scripted mode has
+//  no flush command (its `q_flush` is tied low under `scr_en`); ucore spends
+//  the otherwise-unused E encoding on it so the F1/F3/M12/M19 flush family is
+//  reachable without an EU.  Recorded in docs/notes/ucore_provenance.md.
 //
 //============================================================================
-
-/* verilator lint_off WIDTHEXPAND */
-/* verilator lint_off UNUSEDPARAM */
-/* verilator lint_on UNUSEDPARAM */
-/* verilator lint_on WIDTHEXPAND */
 
 module v30_core (
     input             CLK,
@@ -52,6 +47,7 @@ module v30_core (
     input             NMI,
     input             POLL_N,
     inout      [19:0] AD,
+    output     [19:0] AD_OE,     // the pads' own output enable (task #37)
     output      [1:0] QS,
     output      [2:0] BS,
     output            RD_N,
@@ -90,36 +86,37 @@ logic         scr_en = 1'b0;
 logic   [1:0] scr_qop = '0;
 `endif
 
+//----------------------------------------------------------------------------
+// BIU <-> EU
+//----------------------------------------------------------------------------
 wire  [7:0] q_byte;
-wire        q_avail, q_avail2, q_fresh, q_any;
+wire        q_ripe, q_ripe_lead_n;
+wire  [3:0] q_cnt;
+wire        eu_ghost_full, eu_ghost_idle, eu_ghost_stack_first, eu_rd_wait;
 wire        eu_pop, eu_first, eu_flush;
-wire [15:0] eu_flush_cs, eu_flush_ip;
-wire        eu_req, eu_hold, eu_ready, eu_wr, eu_fwd, eu_word;
-wire        eu_soon, eu_soon_ea, eu_soon_ivt, bus_phase, bus_t4, flush_fast;
-wire        eu_soon_strio;                   // Family-7 strio idle-window lead (task #24)
-wire        grid_phase;
-wire        eu_lock, core_buslock_n, eu_mem_acc;
-wire        eu_rsv_dhi, eu_rsv_push_calc;   // Phase 3 reservation-class hints
-wire        eu_rsv_lead;                     // eu_req=0 onset lead hint
-wire        eu_rsv_strio;                    // Family-5 strio T3-eval veto (task #24)
-wire        eu_rdone, bus_tw;
-wire        eu_defer_wr;
-wire [2:0]  bus_ts;
-wire  [1:0] eu_kind;
-wire        eu_wrap;
-wire [19:0] eu_addr;
-wire  [1:0] eu_seg;
-wire [15:0] eu_wdata;
-wire        eu_started, eu_done, eu_wdone, eu_t1;
-wire [15:0] eu_rdata;
-wire        eu_rd_now;
-wire [15:0] eu_rdata_now;
-wire        psw_ie;
-wire        halt_disp;
-wire [15:0] ss_eu_rdata;
-wire [15:0] ss_biu_rdata;
+wire        eu_flush_pre, eu_flush_rep, eu_flush_stage, eu_flush_pend;
+wire        eu_flush_nmi, eu_flush_int_live;
+wire [15:0] eu_flush_cs, eu_flush_cs_old, eu_flush_ip;
+wire        eu_flush_cs_we;
+wire        eu_post, eu_post_hold, eu_ghost_preview, eu_halt_irq, eu_vector_post;
+wire        eu_word, eu_pair, eu_pair2, eu_split;
+wire        eu_slot_busy, eu_slot_busy_n, eu_access_active;
+wire        eu_direct_fetch, eu_fetch_tail;
+wire  [2:0] eu_bs;
+wire [19:0] eu_addr, eu_addr2;
+wire  [1:0] eu_seg, eu_seg2;
+wire [15:0] eu_wdata, eu_rdata_n;
+wire        eu_rd_done_n, eu_wr_done_n, eu_wr_eval;
+wire        eu_rd_edge;
+wire [15:0] eu_rd_edge_d;
+wire        eu_opr_free;
+wire        eu_susp, eu_resume, eu_halt, eu_unhalt, biu_halted;
+wire        eu_unhalt_disp;                       // F43 (SM3 sitting 6)
+wire        eu_bnd_take, eu_bnd_post;   // SM3 sitting 11 (H1's remains)
+wire        psw_ie, md8080;
+wire [15:0] ss_eu_rdata, ss_biu_rdata;
 wire        ss_biu_bus_quiet;
-reg  [8:0]  ss_addr_q;
+reg   [8:0] ss_addr_q;
 reg  [15:0] ss_wdata_q;
 reg         ss_we_q;
 reg         ss_sel_eu_q, ss_sel_tag_q;
@@ -148,30 +145,26 @@ always @(posedge CLK) begin
     if (SS_WE && CE)    $error("SS_WE asserted while CE high (core not frozen)");
     if (SS_WE && RESET) $error("SS_WE asserted during RESET");
     // Resume-drain contract (A2): the platform must NOT re-enable CE until the
-    // SS command staging has drained. ss_we_q still high at a CE cycle means the
-    // core's FSM takes its `if (ss_we)` branch and SKIPS its state advance -> a
-    // phantom wait on resume. The TB honours this via a parked drain posedge +
-    // negedge CE release; this assertion mechanises the rule so the next
-    // integration (MiSTer wrapper) cannot repeat the bug silently.
+    // SS command staging has drained.  ss_we_q still high at a CE cycle means
+    // the core takes its `if (ss_we)` branch and SKIPS its state advance -> a
+    // phantom wait on resume.
     if (CE && ss_we_q)  $error("CE resumed with SS command staging undrained (ss_we_q high)");
 end
 `endif
 
-// scripted-consumer override (BIU-only verification)
-wire q_pop   = scr_en ? scr_qop[0]              : eu_pop;
-wire q_first = scr_en ? (scr_qop == 2'b01)      : eu_first;
-wire q_flush = scr_en ? 1'b0                    : eu_flush;
-wire qs_e;   // E display timing is BIU-generated (measured law)
-
-// queue status pins: 00 none, 01 first byte, 10 flush, 11 subsequent byte
-assign QS = qs_e   ? 2'b10
-          : q_pop  ? (q_first ? 2'b01 : 2'b11)
-          : 2'b00;
+//----------------------------------------------------------------------------
+// scripted-consumer override (BIU-only verification) -- see the header
+//----------------------------------------------------------------------------
+wire q_pop   = scr_en ? (scr_qop == 2'b01 || scr_qop == 2'b11) : eu_pop;
+wire q_first = scr_en ? (scr_qop == 2'b01)                     : eu_first;
+wire q_flush = scr_en ? (scr_qop == 2'b10)                     : eu_flush;
+wire [15:0] flush_cs = scr_en ? bkd_regs[144 +: 16] : eu_flush_cs;
+wire [15:0] flush_ip = scr_en ? bkd_fetch_ip        : eu_flush_ip;
 
 wire [19:0] ad_o;
 wire        ad_oe_addr, ad_oe_ps, ad_oe_data;
 
-v30_biu u_biu (
+v30u_biu u_biu (
     .clk        (CLK),
     .ce         (CE),
     .ce_half    (CE_HALF),
@@ -183,57 +176,67 @@ v30_biu u_biu (
     .ad_oe_data (ad_oe_data),
     .ube_n      (UBE_N),
     .rd_n       (RD_N),
+    .qs         (QS),
     .ad_i       (AD[15:0]),
     .ready      (READY),
     .psw_ie     (psw_ie),
-    .halt_disp  (halt_disp),
+    .md8080     (md8080),
     .q_byte     (q_byte),
-    .q_avail    (q_avail),
-    .q_avail2   (q_avail2),
-    .q_fresh    (q_fresh),
-    .q_any      (q_any),
-    .qs_e       (qs_e),
+    .q_ripe     (q_ripe),
+    .q_ripe_lead_n(q_ripe_lead_n),
+    .q_cnt_o    (q_cnt),
     .q_pop      (q_pop),
+    .q_first    (q_first),
     .q_flush    (q_flush),
-    .flush_cs   (eu_flush_cs),
-    .flush_ip   (eu_flush_ip),
-    .eu_req     (scr_en ? 1'b0 : eu_req),
-    .eu_soon    (scr_en ? 1'b0 : eu_soon),
-    .eu_soon_ea (scr_en ? 1'b0 : eu_soon_ea),
-    .eu_soon_ivt(scr_en ? 1'b0 : eu_soon_ivt),
-    .eu_soon_strio(scr_en ? 1'b0 : eu_soon_strio),
-    .flush_fast (scr_en ? 1'b0 : flush_fast),
-    .eu_defer_wr(scr_en ? 1'b0 : eu_defer_wr),
-    .eu_mem_acc (scr_en ? 1'b0 : eu_mem_acc),
-    .bus_phase  (bus_phase),
-    .grid_phase (grid_phase),
-    .eu_lock    (scr_en ? 1'b0 : eu_lock),
-    .buslock_n  (core_buslock_n),
-    .bus_t4     (bus_t4),
-    .bus_tw     (bus_tw),
-    .bus_ts     (bus_ts),
-    .eu_hold    (scr_en ? 1'b0 : eu_hold),
-    .eu_ready   (eu_ready),
-    .eu_rsv_dhi (scr_en ? 1'b0 : eu_rsv_dhi),
-    .eu_rsv_push_calc (scr_en ? 1'b0 : eu_rsv_push_calc),
-    .eu_rsv_lead (scr_en ? 1'b0 : eu_rsv_lead),
-    .eu_rsv_strio(scr_en ? 1'b0 : eu_rsv_strio),
-    .eu_wr      (eu_wr),
-    .eu_fwd     (eu_fwd),
-    .eu_word    (eu_word),
-    .eu_kind    (eu_kind),
-    .eu_wrap    (eu_wrap),
+    .flush_pre  (scr_en ? 1'b0 : eu_flush_pre),
+    .flush_rep  (scr_en ? 1'b0 : eu_flush_rep),
+    .flush_stage(scr_en ? 1'b0 : eu_flush_stage),
+    .flush_pend (scr_en ? 1'b0 : eu_flush_pend),
+    .flush_nmi  (scr_en ? 1'b0 : eu_flush_nmi),
+    .flush_int_live(scr_en ? 1'b0 : eu_flush_int_live),
+    .flush_cs   (flush_cs),
+    .flush_cs_old(eu_flush_cs_old),
+    .flush_cs_we(scr_en ? 1'b0 : eu_flush_cs_we),
+    .flush_ip   (flush_ip),
+    .eu_post    (scr_en ? 1'b0 : eu_post),
+    .eu_post_hold(scr_en ? 1'b0 : eu_post_hold),
+    .eu_ghost_preview(scr_en ? 1'b0 : eu_ghost_preview),
+    .eu_halt_irq(scr_en ? 1'b0 : eu_halt_irq),
+    .eu_vector_post(scr_en ? 1'b0 : eu_vector_post),
+    .eu_bs      (eu_bs),
     .eu_addr    (eu_addr),
+    .eu_addr2   (eu_addr2),
+    .eu_split   (eu_split),
     .eu_seg     (eu_seg),
+    .eu_seg2    (eu_seg2),
+    .eu_word    (eu_word),
+    .eu_slot_busy (eu_slot_busy),
+    .eu_slot_busy_n (eu_slot_busy_n),
+    .eu_access_active(eu_access_active),
+    .eu_direct_fetch(eu_direct_fetch),
+    .eu_fetch_tail(eu_fetch_tail),
+    .eu_ghost_full(eu_ghost_full),
+    .eu_ghost_idle(eu_ghost_idle),
+    .eu_ghost_stack_first(eu_ghost_stack_first),
+    .eu_rd_wait(eu_rd_wait),
+    .eu_pair    (scr_en ? 1'b0 : eu_pair),
+    .eu_pair2   (eu_pair2),
     .eu_wdata   (eu_wdata),
-    .eu_started (eu_started),
-    .eu_done    (eu_done),
-    .eu_wdone   (eu_wdone),
-    .eu_rdone   (eu_rdone),
-    .eu_t1      (eu_t1),
-    .eu_rdata   (eu_rdata),
-    .eu_rd_now  (eu_rd_now),
-    .eu_rdata_now (eu_rdata_now),
+    .eu_rdata_n (eu_rdata_n),
+    .eu_rd_done_n (eu_rd_done_n),
+    .eu_rd_edge (eu_rd_edge),
+    .eu_rd_edge_d (eu_rd_edge_d),
+    .eu_wr_done_n (eu_wr_done_n),
+    .eu_wr_eval   (eu_wr_eval),
+    .eu_opr_free(eu_opr_free),
+    .eu_susp    (scr_en ? 1'b0 : eu_susp),
+    .eu_resume  (scr_en ? 1'b0 : eu_resume),
+    .eu_halt    (scr_en ? 1'b0 : eu_halt),
+    .eu_unhalt  (scr_en ? 1'b0 : eu_unhalt),
+    .eu_unhalt_disp(scr_en ? 1'b0 : eu_unhalt_disp),
+    .halted_o   (biu_halted),
+    .eu_bnd_take(scr_en ? 1'b0 : eu_bnd_take),
+    .eu_bnd_post(eu_bnd_post),
     .bkd_load   (bkd_load),
     .bkd_cs     (bkd_regs[144 +: 16]),
     .bkd_ip     (bkd_fetch_ip),
@@ -246,90 +249,116 @@ v30_biu u_biu (
     .ss_bus_quiet(ss_biu_bus_quiet)
 );
 
-v30_eu u_eu (
+v30u_eu u_eu (
     .clk        (CLK),
     .ce         (CE),
     .srst       (RESET),
     .q_byte     (q_byte),
-    .q_avail    (q_avail),
-    .q_avail2   (q_avail2),
-    .q_fresh    (q_fresh),
-    .q_any      (q_any),
+    .q_ripe     (q_ripe),
+    .q_ripe_lead_n(q_ripe_lead_n),
+    .q_cnt      (q_cnt),
     .q_pop      (eu_pop),
     .q_first    (eu_first),
     .q_flush    (eu_flush),
+    .flush_pre  (eu_flush_pre),
+    .flush_rep  (eu_flush_rep),
+    .flush_stage(eu_flush_stage),
+    .flush_pend (eu_flush_pend),
+    .flush_nmi  (eu_flush_nmi),
+    .flush_int_live(eu_flush_int_live),
     .flush_cs   (eu_flush_cs),
+    .flush_cs_old(eu_flush_cs_old),
+    .flush_cs_we(eu_flush_cs_we),
     .flush_ip   (eu_flush_ip),
-    .eu_req     (eu_req),
-    .eu_soon    (eu_soon),
-    .eu_soon_ea (eu_soon_ea),
-    .eu_soon_ivt(eu_soon_ivt),
-    .eu_soon_strio(eu_soon_strio),
-    .flush_fast (flush_fast),
-    .eu_defer_wr(eu_defer_wr),
-    .eu_mem_acc (eu_mem_acc),
-    .eu_rsv_dhi (eu_rsv_dhi),
-    .eu_rsv_push_calc (eu_rsv_push_calc),
-    .eu_rsv_lead (eu_rsv_lead),
-    .eu_rsv_strio(eu_rsv_strio),
-    .bus_phase  (bus_phase),
-    .grid_phase (grid_phase),
-    .eu_lock    (eu_lock),
-    .bus_t4     (bus_t4),
-    .bus_tw     (bus_tw),
-    .bus_ts     (bus_ts),
-    .eu_hold    (eu_hold),
-    .eu_ready   (eu_ready),
-    .eu_wr      (eu_wr),
-    .eu_fwd     (eu_fwd),
-    .eu_word    (eu_word),
-    .eu_kind    (eu_kind),
-    .eu_wrap    (eu_wrap),
+    .eu_post    (eu_post),
+    .eu_post_hold(eu_post_hold),
+    .eu_ghost_preview(eu_ghost_preview),
+    .eu_halt_irq(eu_halt_irq),
+    .eu_vector_post(eu_vector_post),
+    .eu_bs      (eu_bs),
     .eu_addr    (eu_addr),
+    .eu_addr2   (eu_addr2),
+    .eu_split   (eu_split),
     .eu_seg     (eu_seg),
+    .eu_seg2    (eu_seg2),
+    .eu_word    (eu_word),
+    .eu_slot_busy (eu_slot_busy),
+    .eu_slot_busy_n (eu_slot_busy_n),
+    .eu_access_active(eu_access_active),
+    .eu_direct_fetch(eu_direct_fetch),
+    .eu_fetch_tail(eu_fetch_tail),
+    .eu_ghost_full(eu_ghost_full),
+    .eu_ghost_idle(eu_ghost_idle),
+    .eu_ghost_stack_first(eu_ghost_stack_first),
+    .eu_rd_wait(eu_rd_wait),
+    .eu_pair    (eu_pair),
+    .eu_pair2   (eu_pair2),
     .eu_wdata   (eu_wdata),
-    .eu_started (eu_started),
-    .eu_done    (eu_done),
-    .eu_wdone   (eu_wdone),
-    .eu_rdone   (eu_rdone),
-    .eu_t1      (eu_t1),
-    .eu_rdata   (eu_rdata),
-    .eu_rd_now  (eu_rd_now),
-    .eu_rdata_now (eu_rdata_now),
+    .eu_rdata_n (eu_rdata_n),
+    .eu_rd_done_n (eu_rd_done_n),
+    .eu_rd_edge (eu_rd_edge),
+    .eu_rd_edge_d (eu_rd_edge_d),
+    .eu_wr_done_n (eu_wr_done_n),
+    .eu_wr_eval   (eu_wr_eval),
+    .eu_opr_free(eu_opr_free),
+    .eu_susp    (eu_susp),
+    .eu_resume  (eu_resume),
+    .eu_halt    (eu_halt),
+    .eu_unhalt  (eu_unhalt),
+    .eu_unhalt_disp(eu_unhalt_disp),
+    .halted     (biu_halted),
+    .eu_bnd_take(eu_bnd_take),
+    .eu_bnd_post(eu_bnd_post),
     .psw_ie     (psw_ie),
-    .halt_disp  (halt_disp),
+    .md8080     (md8080),
     .pin_int    (INT),
     .pin_nmi    (NMI),
     .pin_poll_n (POLL_N),
     .bkd_load   (bkd_load),
     .bkd_regs   (bkd_regs),
+`ifdef V30_BACKDOOR
+    .dbg_regs      (dbg_regs),
+    .dbg_first_pop (dbg_first_pop),
+    .dbg_pend      (dbg_pend),
+`else
+    /* verilator lint_off PINCONNECTEMPTY */
+    .dbg_regs      (),
+    .dbg_first_pop (),
+    .dbg_pend      (),
+    /* verilator lint_on PINCONNECTEMPTY */
+`endif
     .ss_addr    (ss_addr_q),
     .ss_wdata   (ss_wdata_q),
     .ss_we      (ss_we_q),
     .ss_rdata   (ss_eu_rdata)
-`ifdef V30_BACKDOOR
-    ,
-    .dbg_regs      (dbg_regs),
-    .dbg_first_pop (dbg_first_pop),
-    .dbg_pend      (dbg_pend)
-`else
-    ,
-    /* verilator lint_off PINCONNECTEMPTY */
-    .dbg_regs      (),
-    .dbg_first_pop (),
-    .dbg_pend      ()
-    /* verilator lint_on PINCONNECTEMPTY */
-`endif
 );
 
 // AD drive (simple en?val:'z forms only - Verilator requirement).
-// AD[19:16] carry the address during address phases and PS3-0 during
-// the data phase; AD[15:0] additionally carry write data.
+// AD[19:16] carry the address during address phases and PS3-0 during the
+// data phase; AD[15:0] additionally carry write data.
 assign AD[15:0]  = (ad_oe_addr | ad_oe_data) ? ad_o[15:0]  : 16'hzzzz;
 assign AD[19:16] = (ad_oe_addr | ad_oe_ps)   ? ad_o[19:16] : 4'hz;
 
-assign BUSLOCK_N = core_buslock_n;
+// AD_OE -- THE PADS' OWN OUTPUT ENABLE, PUBLISHED (task #37, user-approved
+// 2026-08-04).  This is a WIRE, not a rule: it is bit-for-bit the SAME
+// expression the two `assign AD[...]` statements above already use to decide
+// whether to drive, so it adds no logic and cannot disagree with the drive.
+// The real part has two pad-enable groups (AD0-15, A16-19/PS0-3) and so does
+// this; the 20-bit form just replicates them so a consumer needs no knowledge
+// of where the groups split.
+//
+// WHY IT EXISTS.  ucore_provenance.md §56.3a's retention intervention needs an
+// "is anyone driving" term, and §56.3a forbids MANUFACTURING one in the
+// harness (that would be a fitted rule in the exact place the intervention
+// must not have one).  It does not forbid the core TELLING the truth: the
+// V30's pads have an output enable, so publishing it is the part's own
+// structure, not the instrument's.  §59.7.1's blocker -- Quartus 17.1 folds
+// `net === 1'bz` on an internal tri-state and deletes the retention register
+// -- is removed by construction, because the model no longer asks the net.
+assign AD_OE = {{4{ad_oe_addr | ad_oe_ps}}, {16{ad_oe_addr | ad_oe_data}}};
 
-wire _unused = &{1'b0, scr_qop[1]};
+// BUSLOCK is not implemented (inherited scope note; the FSM core drives it
+// from the EU's LOCK prefix, which U2 restores).
+assign BUSLOCK_N = 1'b1;
 
 endmodule
