@@ -53,7 +53,8 @@ S_OPC_POP: if (chain == 4'd0) begin
         irq_fast_inta_n = 1'b1;
         irq_sel_nmi_n = irq_nmi_lvl;
         irq_sel_brk_n = !irq_take;      // §86: an EXTERNAL recognition wins
-        brk_arm_n     = 1'b0;           //      ...and the arm is spent either way
+        brk_arm_n     = brk_arm_n && irq_take;   // ...BUT IT DOES NOT SPEND
+                                                 //    THE ARM (fz2 C1)
         st_n = S_IRQ_D;
         stop = 1'b1;
     end else if (!q_ripe) stop = 1'b1;
@@ -93,7 +94,14 @@ S_DECODE: begin
         endcase
         pfxcnt_n = pfxcnt_n + 8'd1;
         // the 0F escape is a 2-clock re-decode; every other prefix retires as
-        // its own 2-clock instruction with its own F pop
+        // its own 2-clock instruction with its own F pop.
+        // KM (2026-08-11): that stays true of the POPS and the `QS` pins, and
+        // it is deliberately NOT what the TF boundary reads any more -- silicon
+        // samples the escape's OPCODE pop (`S_EXT_POP`) too, and the term that
+        // says so is `q_bnd_pop` in v30u_eu.sv.  `S_EXT_CHG1` still sets
+        // nothing: setting `pop_is_first_n` here would be INERT (`q_first`
+        // consults it only at `S_OPC_POP`, and this branch's successor is
+        // `S_EXT_POP`), so it would move neither the boundary nor the pins.
         st_n = (pla3_xop(pv) == PLA3_BL1_EXT_PREFIX) ? S_EXT_CHG1 : S_PFX_CHG;
         stop = 1'b1;
     end else begin
@@ -129,7 +137,34 @@ S_DECODE2: begin
     pv = ld_ext_n ? pla3_ext(ld_b_n) : pla3_native(ld_b_n);
     ld_pla_n = pv;
     if (!ld_ext_n && pla3_one_byte_logic(pv)) begin
-        if (pla3_xop(pv) == PLA3_BL1_HALT) begin
+        // fz2 P2 / `L-B` -- **`HLT` DOES NOT PARK WHEN IT RETIRES INTO THE
+        // TRAP.**  `brk_seen` is the term, and it is the SAME signal the
+        // sibling arm of this `if` reads on this same clock for the same
+        // reason (W3.5's law below: at this decode the arm flop still carries
+        // the previous boundary's value and `brk_seen` is the live one,
+        // measured 23/23).  A parked part has no next boundary, so an arm
+        // sampled at the `HLT`'s own retire has nowhere to be spent and the
+        // trap is lost outright.
+        //
+        // MEASURED, banked FLASH #14 captures, chip against fabric core
+        // (`docs/notes/fz2_p2_prereg_2026-08-10.md` §2.2).  Exemplar
+        // `fz2e/535042`: an `IRET` restores `TF`, the redirect lands on a
+        // byte `F4`, and the chip reads vector 1 with **no HALT cycle ever
+        // driven** -- and the frame it pushes carries IP `0e84`, ONE PAST the
+        // `F4`.  Silicon RETIRED the `HLT` and took the trap at its boundary;
+        // it did not halt and then wake.  The core's own trace has the sample
+        // right (`BRKS seen=1` at the correct boundary) and then parks.
+        //
+        // With the term false this falls into the `ONE_BYTE_LOGIC` arm `HALT`
+        // is already a member of; `v30u_eu_1bl.svh` is `default: ;` for this
+        // xop and ends with the identical `psw_n = (psw_n & PSW_WRITABLE) |
+        // PSW_FORCED` this arm writes, so the fall-through makes the same
+        // architectural write and then takes the ordinary boundary -- which is
+        // where the trap is due.  No flop, no wire, no save-state address, and
+        // no opcode named that this line did not already name.
+        // *Falsifier*: a capture in which the chip drives a HALT cycle at a
+        // `HLT` whose own retire boundary has the BRK/TF arm standing.
+        if (pla3_xop(pv) == PLA3_BL1_HALT && !brk_seen) begin
             // S9a: `halt_decode()` is called HERE, after `pop_opcode`'s own
             // `charge(1)`, so `eu_halt` rides the DECODE clock -- the state
             // this arm hands over to.  One rule, both paths.
@@ -272,23 +307,18 @@ end
 // loader_impl.h -- ModR/M, displacement, effective address
 //----------------------------------------------------------------------------
 S_MODRM: if (chain == 4'd0) begin
-    if (!opc_rm_valid_n && !q_ripe) stop = 1'b1;
+    if (!q_ripe) stop = 1'b1;
     else begin
-        // PF_LOST has one decoder-side ModR/M latch beside the existing
-        // opcode latch.  It changes only when this byte was observed; the
-        // rest of the loader continues to consume the BIU queue normally.
-        v1 = opc_rm_valid_n ? {8'd0, opc_rm_byte_n} : {8'd0, q_byte};
-        opc_rm_valid_n = 1'b0;
-        ld_rm_n = v1[7:0];
+        ld_rm_n = q_byte;
         pc_n = pc_n + 16'd1;
         ld_disp_n = 16'd0;
         ld_ripe_prev_n = 1'b0;
         chg_n = 2'd0;
-        if (v1[7:6] == 2'd1)                            st_n = S_D8_A;
-        else if (v1[7:6] == 2'd2)                       st_n = S_D16_LO;
-        else if ((v1[7:6] == 2'd0) && (v1[2:0] == 3'd6))
+        if (q_byte[7:6] == 2'd1)                        st_n = S_D8_A;
+        else if (q_byte[7:6] == 2'd2)                   st_n = S_D16_LO;
+        else if ((q_byte[7:6] == 2'd0) && (q_byte[2:0] == 3'd6))
                                                         st_n = S_D16_LO;
-        else if (v1[7:6] != 2'd3)                       st_n = S_EA_CHG;
+        else if (q_byte[7:6] != 2'd3)                   st_n = S_EA_CHG;
         else                                            st_n = S_BIND;
         if (st_n != S_BIND) stop = 1'b1;
     end
@@ -515,32 +545,7 @@ end
 
 S_PRERD: if (chain == 4'd0) begin
     // the pre-decode operand read; `wait_opr` opens micro-row 0 at its T4 + 2
-    if (ghost_preread_epop) begin
-        irq_shadow_n = 1'b0;
-        opc_byte_n = q_byte;
-        opc_valid_n = 1'b1;
-        pop_is_first_n = 1'b0;
-        // If the ghost fed this successor, keep one discard token for the
-        // successor's now-unmatched physical completion.  A full-phase ghost
-        // did not feed it and is finished at this pop.
-        ghost_rd_discard_n = ghost_rd_feed_n || ghost_preread_tail;
-        ghost_rd_feed_n = 1'b0;
-        // Reuse the completion-maturity latch as the one-byte ModR/M arm.
-        // Non-ModR/M opcodes clear it here and cannot take a second byte.
-        ghost_rd_ready_n = pla3_has_modrm(pla3_native(q_byte));
-    end
-    if (ghost_preread_late) begin
-        // The successor T1 preceded the ghost completion, so silicon pops at
-        // the successor data edge and hands that edge's word directly to OPR.
-        // Keep one discard token for the later BIU done pulse; the word has
-        // already been consumed here and must not enter rdq a second time.
-        opr_n = eu_rd_edge_d;
-        opr_loaded_n = 1'b1;
-        row_posted_n = 1'b0;
-        ghost_rd_discard_n = 1'b1;
-        st_n = ld_grpd_n ? S_GRPD_CHG : S_ENTER;
-        if (ld_grpd_n) stop = 1'b1;
-    end else if (!row_posted_n) begin
+    if (!row_posted_n) begin
         if (eu_slot_busy_n) stop = 1'b1;
         else begin
             row_posted_n = 1'b1;
@@ -638,17 +643,8 @@ S_ROW: if (chain == 4'd0) begin
     if (!stop) begin
         // the F interlock's own delivery, taken once
         if (e_f) begin
-            if (row_reads_opr && (rd_done_cnt_n != 2'd0)) begin
+            if (row_reads_opr && (rd_done_cnt_n != 2'd0))
                 rd_done_cnt_n = rd_done_cnt_n - 2'd1;
-                // An idle PF_LOST ghost can be the untagged head consumed by
-                // this ordinary micro-row read.  Its younger physical result
-                // is now the unmatched completion represented by the discard
-                // bit; the feed/ready rails have done their job.
-                if (ghost_rd_feed_n) begin
-                    ghost_rd_feed_n = 1'b0;
-                    ghost_rd_ready_n = 1'b0;
-                end
-            end
             if (rdq_n_n != 2'd0) begin
                 opr_n = rdq0_n; rdq0_n = rdq1_n; rdq_n_n = rdq_n_n - 2'd1;
                 opr_fresh_n = 1'b1;
@@ -721,7 +717,8 @@ S_EPOP: if (chain == 4'd0) begin
     else if (bnd_take) begin
         irq_shadow_n = 1'b0;
         irq_sel_nmi_n = irq_nmi_lvl;
-        irq_sel_brk_n = !irq_take; brk_arm_n = 1'b0;              // §86
+        irq_sel_brk_n = !irq_take;                                // §86
+        brk_arm_n = brk_arm_n && irq_take;                        // fz2 C1
         poste_n = 1'b1; pe_opc_reg_n = opc_reg_n; pe_opc8080_n = opc8080_n;
         pe_op8_n = op8_n; pe_pfxcnt_n = pfxcnt_n;
         st_n = S_IRQ_D;
@@ -772,7 +769,8 @@ S_TAIL_W: if (chain == 4'd0) begin
             // the tail's own boundary, taken right where the model takes it
             irq_shadow_n  = 1'b0;
             irq_sel_nmi_n = irq_nmi_lvl;
-            irq_sel_brk_n = !irq_take; brk_arm_n = 1'b0;          // §86
+            irq_sel_brk_n = !irq_take;                            // §86
+            brk_arm_n = brk_arm_n && irq_take;                    // fz2 C1
             st_n = S_IRQ_D;
             stop = 1'b1;
         end else begin
@@ -791,7 +789,8 @@ S_TAIL_POP: begin
     else if (bnd_take) begin
         irq_shadow_n = 1'b0;
         irq_sel_nmi_n = irq_nmi_lvl;
-        irq_sel_brk_n = !irq_take; brk_arm_n = 1'b0;              // §86
+        irq_sel_brk_n = !irq_take;                                // §86
+        brk_arm_n = brk_arm_n && irq_take;                        // fz2 C1
         st_n = S_IRQ_D;
         stop = 1'b1;
     end

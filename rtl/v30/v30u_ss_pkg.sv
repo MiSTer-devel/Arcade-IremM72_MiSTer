@@ -91,33 +91,54 @@ package v30_ss_pkg;
   // that decides whether an `F` row sourcing OPR has anything to wait for.
   // Same rule, same reason as every append before it: a v6 stream has no word
   // for it and must not be silently accepted.
-  // WRFUZZ H3: 0x87 -> 0x88.  The two request-phase bits packed in
-  // `SSA_B_RQ_LATE` are appended at 0x06A; 0x066-0x069 remain retired.
-  // WRFUZZ 8F ghost: 0x88 -> 0x89.  `ghost_rd_discard` is appended at 0x176;
-  // it follows the discarded read across the instruction boundary until the
-  // BIU returns it, so a stream frozen in that interval must carry the bit.
-  // WRFUZZ LEA residue: 0x89 -> 0x8A.  `ea_residue` is appended at 0x177;
+  // WRFUZZ H3 (re-landing L1): 0x87 -> 0x88.  The two request-phase bits
+  // packed in `SSA_B_RQ_LATE` are appended at 0x06A; 0x066-0x069 remain
+  // retired.
+  // WRFUZZ LEA residue: 0x88 -> 0x89.  `ea_residue` is appended at 0x177;
   // it is the retained EA-adder lane exposed by undocumented 8D / mod=3.
-  // WRFUZZ LEA pair rail: 0x8A -> 0x8B.  The retained RHS and its two-register
+  // WRFUZZ LEA pair rail: 0x89 -> 0x8A.  The retained RHS and its two-register
   // select are appended at 0x178-0x179.
-  // WRFUZZ 8F ghost feed: 0x8B -> 0x8D.  `ghost_rd_feed` and
-  // `ghost_rd_ready` are appended at 0x17A-0x17B: the first distinguishes an
-  // idle-phase ghost that feeds the overlapping pre-read, and the second says
-  // the ghost completion matured before successor T1 and permits its early F.
-  // WRFUZZ PF_LOST decoder hold: 0x8D -> 0x8E.  One valid bit and one byte
-  // append the observed successor ModR/M latch at 0x17C-0x17D.
-  localparam int          SS_VERSION   = 8'h8E;   // ucore map v14 (PF_LOST ModR/M hold)
+  // WRFUZZ IRQ latch WIDTH: 0x8A -> 0x8B.  `SSA_E_IRQ_LATCH` grows 6 -> 8
+  // bits (`irq_fast_inta`, `irq_halt_entry`).  NO address is added and NO
+  // count changes, so nothing below this line moves -- and that is EXACTLY
+  // why the version must.  A v10 stream restores those two bits from a word
+  // that has no room for them; `ss_lint`'s constant check compares COUNTS and
+  // structurally cannot see a widened field.  `5403671558` made this same
+  // change and did NOT bump, on the precedent of `rep_chain` (bit 5).  That
+  // precedent is WRONG for the same reason it was wrong then: a silent
+  // stream-CONTENT change is the one class of map edit no gate in this tree
+  // can catch.  This is a deliberate divergence from that commit's numbering
+  // and is the only reason 0x8B, not 0x8A, is the version here.
+  // WRFUZZ 8F ghost READ: 0x8B -> 0x8C.  The read's ONE flop TAKES 0x176 --
+  // the address that was RESERVED for it, and reserved in this file in as many
+  // words.  It follows the displaced mod3 stack read across the instruction
+  // boundary until the BIU returns it, so a stream frozen in that interval
+  // must carry the bit.  A reserved code taken by its NAMED occupant owes no
+  // skip: `ss_addr_of`'s EU hole term is REMOVED below and NO symbol is
+  // renumbered, because 0x177-0x179 sat one step past the hole and now sit one
+  // step past the occupant, which is the same address.  ONE appended group,
+  // ONE bump.
+  //
+  // 0x17A-0x17D REMAIN UNASSIGNED.  `5403671558` put the 8F ghost FEED at
+  // 0x17A-0x17B and the PF_LOST decoder hold at 0x17C-0x17D.  Neither is in
+  // this tree and neither address is; they are named at the end of the EU
+  // region so a later landing reuses the same codes for the same meanings.
+  // 8F GHOST LAUNCH LAW: 0x8D -> 0x8E.  SIX addresses APPENDED (9'h06D-9'h072)
+  // for the launch decoration's own state.  ONE appended group, ONE bump; no
+  // symbol is renumbered and no field is widened.
+  localparam int          SS_VERSION   = 8'h8E;   // ucore map v14 (8F launch law)
   localparam logic [8:0]  SSA_TAG      = 9'h000;
   localparam logic [8:0]  SS_BIU_BASE  = 9'h001;
-  localparam int          SS_BIU_COUNT = 101;  // U4 F49 (+5); s11 (-4); s21 (-1); H3 (+1)
+  localparam int          SS_BIU_COUNT = 109;  // U4 F49 (+5); s11 (-4); s21 (-1); H3 (+1);
+                                              // F58 (+2, the AD output latch);
+                                              // 8F launch law (+6)
   localparam logic [8:0]  SS_EU_BASE   = 9'h100;
-  localparam int          SS_EU_COUNT  = 126;  // U2 p5 (+2 recog); U4 F49 (+1);
+  localparam int          SS_EU_COUNT  = 122;  // U2 p5 (+2 recog); U4 F49 (+1);
                                               // SM3 s25 / §86 (+1, the BRK arm);
                                               // SM3 s26 / §87.A (+1, opr_loaded);
-                                              // WRFUZZ 8F (+1, discarded read);
                                               // WRFUZZ LEA (+1, EA residue);
-                                              // WRFUZZ 8F (+2, feed + maturity);
-                                              // WRFUZZ PF_LOST (+2, ModR/M hold)
+                                              // WRFUZZ LEA (+2, pair rail);
+                                              // WRFUZZ 8F (+1, discarded read)
   localparam int          SS_COUNT     = 1 + SS_BIU_COUNT + SS_EU_COUNT;
   localparam logic [15:0] SS_TAG       = {8'(SS_VERSION), 8'(SS_COUNT)};
 
@@ -221,6 +242,33 @@ package v30_ss_pkg;
   localparam logic [8:0] SSA_B_RD_VAL           = 9'h05C;
   localparam logic [8:0] SSA_B_READY_PREV       = 9'h05D;
   localparam logic [8:0] SSA_B_LAST_UBE         = 9'h05E;
+  // F58: the AD output latch's two lanes, APPENDED past the region's current
+  // top (9'h06A) so nothing is renumbered.  The dense map's two existing hole
+  // terms (9'h038 +1, 9'h066 +4) carry them: i = 102 -> 9'h06B, i = 103 ->
+  // 9'h06C.  0x05F/0x060 are TAKEN (rd_first_hi / rd_was_split) and were the
+  // first thing this append tried; the collision is why the free-code scan
+  // runs before the edit and not after it.
+  localparam logic [8:0] SSA_B_LAST_AD_HI       = 9'h06B;
+  localparam logic [8:0] SSA_B_LAST_AD_LO       = 9'h06C;
+
+  // THE 8F GHOST READ'S LAUNCH DECORATION (v14).  The read is decorated at the
+  // clock the BIU LAUNCHES it, not at the clock the EU posts it, so the two
+  // drivers' composed addresses and the request's AGE are BIU state and a
+  // stream frozen between the post and the T1 must carry them.  SIX addresses,
+  // APPENDED past the region's top (9'h06C), so nothing is renumbered and the
+  // map's one hole (9'h038) and the 9'h066-069 retirement are untouched:
+  // i = 104 -> 9'h06D ... i = 109 -> 9'h072.
+  //   `_SP` / `_BARE`  the two drivers, 20 bits each, LO+HI as `cur_addr` is
+  //   `_AGE`           `dGR`, saturating at 2 -- the law needs no more
+  //   `_TAG`           the two slot tags, the commit's tag, and the row's own
+  //                    currency one clock ago (the age's arm is its RISING
+  //                    EDGE), packed as `SSA_B_RQ_LATE` packs its pair
+  localparam logic [8:0] SSA_B_GHOST_SP_LO      = 9'h06D;
+  localparam logic [8:0] SSA_B_GHOST_SP_HI      = 9'h06E;
+  localparam logic [8:0] SSA_B_GHOST_BARE_LO    = 9'h06F;
+  localparam logic [8:0] SSA_B_GHOST_BARE_HI    = 9'h070;
+  localparam logic [8:0] SSA_B_GHOST_AGE        = 9'h071;
+  localparam logic [8:0] SSA_B_GHOST_TAG        = 9'h072;
 
   // dense-iteration helper (TB/harness): stream index -> address
   // SM3 s21 / F56: the BIU region carries ONE RETIRED CODE, 9'h038, and the
@@ -238,7 +286,14 @@ package v30_ss_pkg;
       if (a >= 9'h066) a = a + 9'd4;
       ss_addr_of = a;
     end
-    else                        ss_addr_of = SS_EU_BASE  + 9'(i - 1 - SS_BIU_COUNT);
+    else begin
+      // The 8F ghost READ has taken 9'h176, the code L1 RESERVED for it, so
+      // the EU region is dense again and the hole term is GONE.  Nothing is
+      // renumbered by its removal: 0x177-0x179 sat one step past the hole and
+      // now sit one step past the occupant, which is the same address.  The
+      // BIU's 9'h038 is the map's only hole.
+      ss_addr_of = SS_EU_BASE + 9'(i - 1 - SS_BIU_COUNT);
+    end
   endfunction
 
   // field width per address (TB mode-5 round-trip check; 0 = unmapped)
@@ -280,7 +335,7 @@ package v30_ss_pkg;
   localparam logic [8:0] SSA_B_RQ_LATE          = 9'h06A;
 
   //--------------------------------------------------------------------------
-  // EU region (module v30u_eu): 0x100-0x177
+  // EU region (module v30u_eu): 0x100-0x179, dense (0x176 now occupied)
   //--------------------------------------------------------------------------
   localparam logic [8:0] SSA_E_AX                   = 9'h100;
   localparam logic [8:0] SSA_E_CX                   = 9'h101;
@@ -406,11 +461,20 @@ package v30_ss_pkg;
   localparam logic [8:0] SSA_E_PIN_PIPE             = 9'h171;
   // ...and `SSA_E_IRQ_LATCH` is the recognition's LATCH word: nmi_latch,
   // irq_shadow, bnd_armed, irq_sel_nmi, unhalt_pend, (U2 pass 6) the REP
-  // boundary's anchor selector `rep_chain`, and first-INTA collision
-  // provenance, and bit 7 records that the selected interrupt woke HALT.
-  // Bits 5:7 of a word that was already in the map -- NO address
-  // is added and NO count changes, so SS_VERSION does NOT move; a v1 stream
-  // restores them as 0, their sequence-start values.
+  // boundary's anchor selector `rep_chain`, and -- L1 -- bit 6
+  // `irq_fast_inta` (first-INTA collision provenance) and bit 7
+  // `irq_halt_entry` (the selected interrupt woke HALT).
+  //
+  // ⚠ THE OLD ARGUMENT ATTACHED TO BIT 5 IS WITHDRAWN.  It read: "NO address
+  // is added and NO count changes, so SS_VERSION does NOT move."  That is
+  // exactly backwards.  A widened field changes what a stream word MEANS while
+  // leaving every count identical, so it is the ONE map edit `ss_lint` cannot
+  // see -- its checks compare symbol counts and per-symbol reference counts,
+  // both of which are unmoved here.  The version is the only channel left, and
+  // L1 spends it: 6 -> 8 bits carries 0x8A -> 0x8B.  A v10 stream restoring
+  // this word leaves bits 6-7 as 0, which is their sequence-start value, but
+  // "the value happens to be safe" is not the same statement as "the stream is
+  // compatible" and only the second one is what a version means.
 
   localparam logic [8:0] SSA_E_IRQ_LATCH            = 9'h172;
 
@@ -440,9 +504,15 @@ package v30_ss_pkg;
   // that resumes an instruction silicon never finishes.
   localparam logic [8:0] SSA_E_OPR_LOADED           = 9'h175;
 
-  // The undocumented 8F mod3 stack read completes after the instruction has
-  // retired.  This bit follows the resulting one-place displacement through
-  // an overlapping read chain, so the unmatched tail completion is dropped.
+  // 9'h176 -- THE RESERVED CODE, TAKEN BY THE OCCUPANT IT WAS RESERVED FOR,
+  // WITH ITS RESERVED MEANING UNCHANGED.  The undocumented 8F mod3 stack read
+  // completes after the instruction has retired.  The bus has no result tags
+  // and returns words in order, so every completion in the chain is taken by
+  // the oldest requester still waiting -- a one-place displacement -- and the
+  // last one has nobody waiting for it.  This bit follows that displacement so
+  // the unmatched TAIL completion is dropped.  L1 declared it here as a
+  // COMMENT and left `ss_addr_of` stepping over the code; both are now gone,
+  // and no symbol moved.
   localparam logic [8:0] SSA_E_GHOST_DISCARD        = 9'h176;
 
   // The retained EA-adder lane normally follows tmpa.  A ModR/M address
@@ -455,12 +525,17 @@ package v30_ss_pkg;
   localparam logic [8:0] SSA_E_EA_PAIR_RHS          = 9'h178;
   localparam logic [8:0] SSA_E_EA_PAIR_VALID        = 9'h179;
 
-  // Only an idle-phase ghost can become the untagged head consumed by a
-  // younger pre-read.  Full-phase ghosts retain ordinary discard semantics.
-  localparam logic [8:0] SSA_E_GHOST_FEED           = 9'h17A;
-  localparam logic [8:0] SSA_E_GHOST_READY          = 9'h17B;
-  localparam logic [8:0] SSA_E_OPC_RM_VALID         = 9'h17C;
-  localparam logic [8:0] SSA_E_OPC_RM_BYTE          = 9'h17D;
+  // 9'h17A-9'h17D are UNASSIGNED.  `5403671558` put the 8F ghost FEED
+  // (`ghost_rd_feed`, `ghost_rd_ready`) at 0x17A-0x17B and the PF_LOST
+  // decoder hold (`opc_rm_valid`, `opc_rm_byte`) at 0x17C-0x17D.  BOTH are
+  // BOOKED UNLANDABLE-AS-DESIGNED, with the block characterised and the
+  // mechanism NOT condemned: the feed reaches the loader chain through the
+  // DATA path off the live READY pin and measured 15.3 MHz on two draws
+  // (`docs/notes/ghost8f_results_2026-08-09.md` §9), and the hold is dead
+  // without the feed.  Neither address is in this tree.  They are named here
+  // so a later landing -- a faster fabric, or the mechanism reformulated so
+  // the successor's pop does not ride the data edge -- reuses the same codes
+  // for the same meanings.
 
   function automatic int ss_field_width(input logic [8:0] a);
     case (a)
@@ -560,6 +635,14 @@ package v30_ss_pkg;
       SSA_B_RD_VAL:          ss_field_width = 16;
       SSA_B_READY_PREV:      ss_field_width = 1;
       SSA_B_LAST_UBE:        ss_field_width = 1;
+      SSA_B_LAST_AD_HI:      ss_field_width = 4;
+      SSA_B_LAST_AD_LO:      ss_field_width = 16;
+      SSA_B_GHOST_SP_LO:     ss_field_width = 16;
+      SSA_B_GHOST_SP_HI:     ss_field_width = 4;
+      SSA_B_GHOST_BARE_LO:   ss_field_width = 16;
+      SSA_B_GHOST_BARE_HI:   ss_field_width = 4;
+      SSA_B_GHOST_AGE:       ss_field_width = 2;
+      SSA_B_GHOST_TAG:       ss_field_width = 4;
       // U2 pass 6 -- the two BIU fields declared AFTER this function used to
       // fall through to `default: 0` for the same reason the whole EU region
       // did: the function was placed before their localparams.  It now sits
@@ -699,10 +782,6 @@ package v30_ss_pkg;
       SSA_E_EA_RESIDUE:          ss_field_width = 16;
       SSA_E_EA_PAIR_RHS:         ss_field_width = 16;
       SSA_E_EA_PAIR_VALID:       ss_field_width = 1;
-      SSA_E_GHOST_FEED:          ss_field_width = 1;
-      SSA_E_GHOST_READY:         ss_field_width = 1;
-      SSA_E_OPC_RM_VALID:        ss_field_width = 1;
-      SSA_E_OPC_RM_BYTE:         ss_field_width = 8;
       SSA_E_RST_CTR:             ss_field_width = 3;   // F49
       default: ss_field_width = 0;
     endcase

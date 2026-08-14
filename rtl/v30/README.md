@@ -1,12 +1,5 @@
 # ucore — the ROM-driven V30 core (hardware twin of `sim/`)
 
-Imported into Arcade-IremM72 from `nec_test` HEAD
-`29dcc5b05fdc0bf6e72e05b0c309b859c9a41d20`; the ucore directory's last
-content change is `5403671558a5c20ff4036c6d59ebd06124f3fd78`. The local
-integration changes only the microcode-table paths in `v30u_ucrom.sv`;
-`v30_bus.sv` is the M72-specific external bus adapter and is not part of the
-upstream ucore.
-
 ## GOVERNANCE RULE (read before changing anything in this directory)
 
 **SUPERSEDED 2026-08-04 by the user directive in `CLAUDE.md` — the

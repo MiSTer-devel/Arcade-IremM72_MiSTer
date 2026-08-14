@@ -86,10 +86,6 @@
         SSA_E_EA_RESIDUE:          ss_rdata <= ea_residue;
         SSA_E_EA_PAIR_RHS:         ss_rdata <= ea_pair_rhs;
         SSA_E_EA_PAIR_VALID:       ss_rdata <= {15'b0, ea_pair_valid};
-        SSA_E_GHOST_FEED:          ss_rdata <= {15'b0, ghost_rd_feed};
-        SSA_E_GHOST_READY:         ss_rdata <= {15'b0, ghost_rd_ready};
-        SSA_E_OPC_RM_VALID:        ss_rdata <= {15'b0, opc_rm_valid};
-        SSA_E_OPC_RM_BYTE:         ss_rdata <= {8'b0, opc_rm_byte};
         SSA_E_RDQ0:                ss_rdata <= rdq0;
         SSA_E_RDQ1:                ss_rdata <= rdq1;
         SSA_E_RDQ_N:               ss_rdata <= {14'b0, rdq_n};

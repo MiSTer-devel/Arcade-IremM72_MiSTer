@@ -1,20 +1,38 @@
 //============================================================================
 //  Irem M72 for MiSTer FPGA - V30 core bus adapter
 //
-//  Wraps the cycle-accurate nec_test v30_core (max-mode, muxed AD/BS bus) and
-//  presents a lean, word-aligned bus to m72.v: address+byte-enables, separate
-//  read/write strobes for memory and IO, an INTA/vector handshake, and a
-//  code-fetch flag (BS==CODE) so the sim DebugLink can tell prefetch from data
-//  reads.
+//  Wraps the cycle-accurate nec_test v30_core and presents a lean,
+//  word-aligned bus to m72.v: address+byte-enables, separate read/write
+//  strobes for memory and IO, an INTA/vector handshake, and a code-fetch flag
+//  (BS==CODE) so the sim DebugLink can tell prefetch from data reads.
+//
+//  --- THE DE-MUXED CORE (2026-08-14) --------------------------------------
+//  Built with `V30_MUXED_AD` UNDEFINED, so the core publishes the three
+//  quantities the real part's 20 pins share as ports of their own -- ADDR_O /
+//  DATA_O / STATUS_O -- and takes read data on DATA_I.  What that deletes from
+//  this adapter is the whole pin-multiplex layer:
+//
+//    * the `tri [19:0] AD` net, its `drive_en` one-shot and the tri-state
+//      assign that drove read data back onto it;
+//    * `ad_q` / `ube_n_q`, the free-running pin copies;
+//    * the T1 address-phase capture, which existed ONLY to sample AD before
+//      the core switched it from address to write data.  There is no
+//      turnaround to race any more, so there is nothing to be early for;
+//    * `CE_HALF`, which existed only to mark that turnaround.  The core now
+//      takes ONE clock enable.
+//
+//  What stays is the max-mode bus-controller model, because the core still
+//  announces with BS and derives nothing else: the T-state tracker is what
+//  turns {BS, READY} into m72.v's strobe levels.  There is deliberately no
+//  "address valid" pin on the core -- that would be a pin the die does not
+//  have -- so this module still derives `addr_valid` itself.
 //
 //  Timing model (CE-freeze with catch-up):
-//    ce      : advances a T-state; 8MHz average rate
-//    ce_half : the T1 address-latch strobe, one fabric clock after each ce
-//  The core is frozen by withholding ce/ce_half while an SDRAM access is
-//  outstanding, then catches up at one phase per fabric clock (16MHz burst)
-//  until it matches the steady 8MHz reference (m72.v owns that pacing).
-//  READY (m72.v-driven) inserts real Tw states for the sprite/tile RAM
-//  wait-state feature; it is orthogonal to the SDRAM CE-freeze above.
+//    ce : advances a T-state; 8MHz average rate.  The core is frozen by
+//    withholding it while an SDRAM access is outstanding, then catches up
+//    (m72.v owns that pacing).  READY (m72.v-driven) inserts real Tw states
+//    for the sprite/tile RAM wait-state feature; it is orthogonal to the
+//    SDRAM CE-freeze.
 //
 //  Distilled from nec_test/hdl/rtl/nec_bus.sv T-state tracker (large mode,
 //  minus wait-states / random / capture / power sequencing / harness), and
@@ -26,7 +44,6 @@ module v30_bus #(
 ) (
     input             clk,
     input             ce,          // CPU-clock advance strobe (T-state)
-    input             ce_half,     // T1 address-latch strobe (2 clks after ce)
     input             reset,       // active high
     input             ready,       // V30 READY: low at T3/Tw inserts Tw (M72 wait-states)
 
@@ -37,8 +54,8 @@ module v30_bus #(
     input      [15:0] cpu_din,     // read data (sampled by the core at T3/T4)
 
     // access strobes
-    output            mem_rd,      // level, T1-half .. T4 (CODE or MEMR)
-    output            io_rd,       // level, T1-half .. T4 (IOR)
+    output            mem_rd,      // level, T2 .. T3 (CODE or MEMR)
+    output            io_rd,       // level, T2 .. T3 (IOR)
     output            mem_wr_pending, // address-valid MEMW, for early READY generation
     output            mem_wr,      // level, held during T3 (MEMW)
     output            io_wr,       // level, held during T3 (IOW)
@@ -79,16 +96,14 @@ localparam bit [2:0] ST_TW = 3'd4;
 localparam bit [2:0] ST_T4 = 3'd5;
 
 //----------------------------------------------------------------------------
-// Core instance (private muxed AD net)
+// Core instance (de-muxed bus)
 //----------------------------------------------------------------------------
-tri  [19:0] AD;
 wire  [2:0] BS;
 wire        RD_N, UBE_N;
+wire [19:0] ADDR_O;
+wire [15:0] DATA_O;
+wire  [3:0] STATUS_O;
 reg  [15:0] rdata_q;
-reg         drive_en;
-
-// harness drives read/INTA data onto AD[15:0] during read cycles
-assign AD[15:0]  = drive_en ? rdata_q : 16'hzzzz;
 
 `ifdef V30_BACKDOOR
 wire [223:0] core_dbg_regs;
@@ -118,14 +133,15 @@ wire        ss_err /* verilator public_flat */;
 v30_core u_core (
     .CLK        (clk),
     .CE         (ce),
-    .CE_HALF    (ce_half),
     .RESET      (reset),
     .READY      (ready),
     .INT        (int_req),
     .NMI        (1'b0),
     .POLL_N     (1'b1),
-    .AD         (AD),
-    .AD_OE      (),
+    .DATA_I     (rdata_q),
+    .ADDR_O     (ADDR_O),
+    .DATA_O     (DATA_O),
+    .STATUS_O   (STATUS_O),
     .QS         (),
     .BS         (BS),
     .RD_N       (RD_N),
@@ -184,33 +200,14 @@ always_ff @(posedge clk) begin
 end
 
 //----------------------------------------------------------------------------
-// Registered pin samples (mirrors nec_bus: status/data are one clk old at the
-// FSM edge, reproducing the verified end-of-cycle timing relationship).
+// Registered BS sample (mirrors nec_bus: status is one clk old at the FSM
+// edge, reproducing the verified end-of-cycle timing relationship).  BS only
+// changes on a `ce` edge, so at the next `ce` this carries the announcement
+// the tracker is meant to act on; the register is what keeps the announcement
+// out of the tracker's own combinational cone.
 //----------------------------------------------------------------------------
 reg  [2:0] bs_q;
-reg        ube_n_q;
-reg [19:0] ad_q;
-
-always_ff @(posedge clk) begin
-    bs_q    <= BS;
-    ube_n_q <= UBE_N;
-    ad_q    <= AD;
-end
-
-// T1 address-phase pin capture on the FALLING clock edge (the tb_v30_core.sv
-// scheme): AD holds the address and UBE_N is stable across the half-clock
-// between the T1-entering CE and the core's CE_HALF processing edge.
-// Posedge-delayed copies can belong to the neighbouring bus cycle when
-// cycles run back-to-back (string ops corrupted their byte enables), and
-// live posedge sampling races the core's switch to the data phase.
-reg [19:0] addr_neg;
-reg        ube_neg;
-always_ff @(negedge clk) begin
-    if (ce_half && t_state == ST_T1) begin
-        addr_neg <= AD;
-        ube_neg  <= UBE_N;
-    end
-end
+always_ff @(posedge clk) bs_q <= BS;
 
 //----------------------------------------------------------------------------
 // T-state tracker (advances under ce)
@@ -221,8 +218,8 @@ reg        is_read_cycle, is_write_cycle;
 reg        addr_valid;
 reg        inta_prev, inta_second;
 reg [19:0] addr_lat;
+reg [19:0] addr_ann;   // ADDR_O captured at T1 entry
 reg  [1:0] be_lat;
-reg [15:0] dout_lat;
 
 wire bs_active = bs_q != BS_PASV;
 
@@ -250,16 +247,32 @@ always_ff @(posedge clk) begin
         addr_valid     <= 1'b0;
         inta_prev      <= 1'b0;
         inta_second    <= 1'b0;
-        drive_en       <= 1'b0;
     end else begin
-        // drive read data onto AD one clk after entering T2 (nec_bus timing)
         if (ce) begin
             t_state <= next_t;
 
+            // `ADDR_O` IS CAPTURED AT T1 ENTRY, `UBE_N` INSIDE T1, AND THAT
+            // IS NOT A STYLE CHOICE -- the two do not change owner together.
+            //
+            // `ADDR_O` follows the ANNOUNCEMENT: at the `ce` that enters T1
+            // the announcement for this cycle is still up and it already
+            // carries the address about to run, and the core re-points it at
+            // the NEXT cycle as soon as THAT is announced, which can be inside
+            // this cycle.  `UBE_N` is the running cycle's pin and only becomes
+            // this cycle's at the entering edge itself.
+            //
+            // MEASURED, both directions, against the muxed build's 6,886
+            // accesses: capturing both at entry gives correct addresses and
+            // the PREVIOUS cycle's byte enables (first wrong at access 14);
+            // capturing both inside T1 gives correct byte enables and picks up
+            // a later announcement's address (first wrong at access 93).  Each
+            // at its own instant is the only combination that reproduces the
+            // muxed build exactly.
             if (next_t == ST_T1) begin
                 lat_type       <= bs_q;
                 is_read_cycle  <= read_type;
                 is_write_cycle <= write_type;
+                addr_ann       <= ADDR_O;
                 if (bs_q == BS_INTA) begin
                     inta_second <= inta_prev;
                     inta_prev   <= 1'b1;
@@ -269,31 +282,37 @@ always_ff @(posedge clk) begin
                 end
             end
 
-            if (next_t == ST_T2 && is_read_cycle)
-                drive_en <= 1'b1;
-
-            // capture write data while the core drives it (T2/T3)
-            if ((t_state == ST_T2 || t_state == ST_T3) && is_write_cycle)
-                dout_lat <= ad_q[15:0];
+            // THE ADDRESS AND BYTE ENABLES ARE CAPTURED *INSIDE* T1, on the
+            // `ce` that leaves it -- not on the one that enters it.
+            //
+            // `ADDR_O` and `UBE_N` do NOT change owner together.  At the
+            // entering edge the announcement is still up, so `ADDR_O` already
+            // carries the cycle about to run while `UBE_N` still carries the
+            // one just finished: latching there gets a correct address with
+            // the PREVIOUS cycle's byte enables.  MEASURED -- addresses
+            // matched the muxed build on every access and `cpu_be` did not,
+            // from the 14th access on.  One `ce` later both are the running
+            // cycle's (`r_cur_addr` / `r_cur_ube_n`) and they agree.
+            //
+            // This is the same CONTENT the muxed build captured off the pins
+            // during T1; only the instant moves, from mid-T1 (it had `ce_half`
+            // to land on) to the end of T1.
+            if (t_state == ST_T1) begin
+                addr_lat   <= {addr_ann[19:1], 1'b0};
+                be_lat     <= {~UBE_N, ~addr_ann[0]};
+                addr_valid <= 1'b1;
+            end
 
             if (next_t == ST_T4 || next_t == ST_TI)
-                drive_en <= 1'b0;
-        end
-
-        // Address / byte-enable latch on the T1 half-cycle strobe, from the
-        // negedge-captured pin samples (see below) - race-free against both
-        // the address-drive and the data-phase switch.
-        if (ce_half && t_state == ST_T1) begin
-            addr_lat   <= {addr_neg[19:1], 1'b0};
-            be_lat     <= {~ube_neg, ~addr_neg[0]};
-            addr_valid <= 1'b1;
-        end else if (ce && (next_t == ST_T4 || next_t == ST_TI)) begin
-            addr_valid <= 1'b0;
+                addr_valid <= 1'b0;
         end
     end
 end
 
-// read data mux: INTA cycles present the vector number on AD[7:0]
+// Read data into the core's DATA_I.  Registered exactly as it was when it was
+// driven onto AD, so the value the core samples at T3/T4 is unchanged; with no
+// shared pad there is no drive enable and it is simply always presented.
+// INTA cycles present the vector number in the low byte.
 always_ff @(posedge clk)
     rdata_q <= (lat_type == BS_INTA) ? {8'h00, int_vector} : cpu_din;
 
@@ -302,10 +321,13 @@ always_ff @(posedge clk)
 //----------------------------------------------------------------------------
 assign cpu_addr   = addr_lat;
 assign cpu_be     = be_lat;
-assign cpu_dout   = dout_lat;
+// `DATA_O` is the owning cycle's write word and is meaningful from that
+// cycle's T1 through its T4, which covers every instant `mem_wr` / `io_wr`
+// below can be asserted, so it needs no latch of its own.
+assign cpu_dout   = DATA_O;
 assign code_fetch = (lat_type == BS_CODE);
 
-// read strobes: level from T1-half through T3 (addr_valid), cleared at T4
+// read strobes: level from T2 through T3 (addr_valid), cleared at T4
 assign mem_rd = addr_valid && ((lat_type == BS_CODE) || (lat_type == BS_MEMR));
 assign io_rd  = addr_valid && (lat_type == BS_IOR);
 

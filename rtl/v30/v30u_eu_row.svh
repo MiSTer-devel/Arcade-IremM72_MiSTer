@@ -148,7 +148,7 @@ begin
         if (row_bus) begin
             if (row_is_wr || row_is_wb) begin
                 pend_active_n = 1'b1;
-                pend_off_n  = acc_off;
+                pend_off_n  = acc_off_nog;
                 pend_seg_n  = acc_seg;
                 pend_byte_n = acc_byte;
                 pend_io_n   = acc_io;
@@ -159,19 +159,18 @@ begin
                 // assertion -- so before this they wrapped in simulation and in
                 // fabric alike.  Both are decremented with an explicit
                 // `!= 2'd0` floor already; this is the matching ceiling.
-                if (acc_split) wr_out_n = (wr_out_n >= 2'd2) ? 2'd3
+                if (acc_split_wr) wr_out_n = (wr_out_n >= 2'd2) ? 2'd3
                                                          : wr_out_n + 2'd2;
                 else if (wr_out_n != 2'd3) wr_out_n = wr_out_n + 2'd1;
             end else begin
                 if (rd_pending_n != 2'd3) rd_pending_n = rd_pending_n + 2'd1;
-                // Every scored ghost starts with an empty read pipeline.  If
-                // an excluded/open-bus stream reaches it behind an older read,
-                // retain baseline delivery rather than invent a tag queue.
-                if (ghost_read_stale_alu && (rd_pending_n == 2'd1)) begin
+                // The 8F ghost read ARMS the discard here, on the clock its
+                // own row posts.  The guard is the regime the mechanism is
+                // measured in: an empty read pipeline, so this row IS the
+                // chain's head.  Behind an older read the baseline delivery
+                // is retained rather than inventing a tag queue.
+                if (ghost_read_stale_alu && (rd_pending_n == 2'd1))
                     ghost_rd_discard_n = 1'b1;
-                    ghost_rd_feed_n = eu_ghost_idle;
-                    ghost_rd_ready_n = 1'b0;
-                end
             end
         end
     end
@@ -226,7 +225,8 @@ begin
         // there); only the successor's decode is what does not happen.
         if (bnd_fire) begin
             irq_sel_nmi_n = irq_nmi_lvl;
-            irq_sel_brk_n = !irq_take; brk_arm_n = 1'b0;          // §86
+            irq_sel_brk_n = !irq_take;                            // §86
+            brk_arm_n = brk_arm_n && irq_take;                    // fz2 C1
             poste_n = 1'b1; pe_opc_reg_n = opc_reg_n; pe_opc8080_n = opc8080_n;
             pe_op8_n = op8_n; pe_pfxcnt_n = pfxcnt_n;
             st_n = S_IRQ_D;

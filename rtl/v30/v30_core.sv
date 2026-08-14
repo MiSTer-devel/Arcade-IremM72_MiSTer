@@ -1,11 +1,4 @@
 //============================================================================
-// Imported from nec_test hdl/rtl/ucore at HEAD
-// 29dcc5b05fdc0bf6e72e05b0c309b859c9a41d20 (2026-08-07); the ucore
-// directory's last content change is 5403671558a5c20ff4036c6d59ebd06124f3fd78.
-// The M72 integration keeps this upstream module name and interface.
-//============================================================================
-//
-//============================================================================
 //
 //  v30_core (ucore) - the ROM-driven NEC V30 (uPD70116) core, max mode.
 //
@@ -22,6 +15,53 @@
 //
 //  STAGE U1: BIU only.  `v30u_eu` is a tied-off placeholder and the EU side is
 //  held inert exactly as the FSM core's scripted-consumer mode holds it.
+//
+//  --- THE BUS SHAPE: `V30_MUXED_AD` (2026-08-14) ---------------------------
+//
+//  The V30 multiplexes one twenty-pin bus three ways because a 40-pin DIP has
+//  no room for sixty pins.  Inside an FPGA that constraint does not exist, so
+//  the three quantities the pins share are published as ports of their own --
+//  and every one of them was already a register in `v30u_biu`, so this adds NO
+//  FLOP and NO LOGIC.  The de-mux is a re-slicing of a mux.
+//
+//    ADDR_O[19:0]  the LINEAR ADDRESS of the cycle that owns the bus.  VALID
+//                  FROM the announcement clock (carrying the ANNOUNCED cycle's
+//                  address) THROUGH the whole of that cycle's T1/T2/Tw/T3/T4
+//                  (carrying the RUNNING cycle's).  Never meaningless: with
+//                  nothing running it holds the last running cycle's address,
+//                  which is what the real part's pads show by retention.  An
+//                  INTA announces no address and this reads ZERO there.
+//    DATA_O[15:0]  the WRITE WORD of the cycle that owns the bus, in bus byte
+//                  order (swapped on an odd address).  MEANINGFUL from the
+//                  owning WRITE cycle's T1 through its T4.  On a READ cycle it
+//                  holds the previous write's word and is DECLARED MEANINGLESS
+//                  -- the multiplexed view never publishes it there either.
+//    STATUS_O[3:0] {md8080, psw_ie, seg[1:0]} -- the nibble A19-16 carries
+//                  whenever it is not carrying an address.  MEANINGFUL for the
+//                  whole of the owning cycle, and it follows the SAME owner
+//                  the address does.
+//
+//  There is deliberately NO "address valid" strobe.  The real part in max mode
+//  announces with BS (S0-S2) and the bus controller derives the rest; this
+//  interface does the same, with BS / RD_N / UBE_N unchanged.  A strobe would
+//  be a pin the die does not have.
+//
+//  `V30_MUXED_AD` decides whether the MULTIPLEXED VIEW exists at all.  It is
+//  orthogonal to `SYNTHESIS` (which selects fabric-vs-sim); this one is the
+//  bus shape, and the rig defines BOTH.
+//    defined   -- AD / AD_OE / CE_HALF are ports, `v30u_biu` carries
+//                 `t1_half2` and the `ad_oe_*` enables, `ad_o` is COMPOSED
+//                 from ADDR_O/DATA_O/STATUS_O, and behaviour is byte-identical
+//                 to the pre-2026-08-14 core.
+//    undefined -- those three ports DO NOT EXIST on this module, `t1_half2`
+//                 and the `ad_oe_*` PORTS go with them, and read data arrives
+//                 on DATA_I instead of on AD.  A de-muxed build is a DIFFERENT
+//                 SAVE-STATE STREAM (`SSA_B_T1_HALF2` has no flop behind it).
+//  ⚠ The define removes the PINS, not the drive: `v30u_biu` still computes
+//  what the core would put on shared pads, because F58 makes a HALT
+//  pseudo-cycle PUBLISH the AD output latch and that makes the drive machine
+//  state.  See THE AD OUTPUT LATCH in `v30u_biu.sv`.
+//  `docs/notes/demux_bus_prereg_2026-08-14.md`.
 //
 //  SCRIPTED-CONSUMER MODE (V30_BACKDOOR, verification only).  `scr_en` hands
 //  the queue port to `scr_qop`, using the QS encoding as the command:
@@ -40,14 +80,27 @@
 module v30_core (
     input             CLK,
     input             CE,        // clock-enable: advance core state this clk
-    input             CE_HALF,   // clock-enable for the T1 negedge half-cycle
+`ifdef V30_MUXED_AD
+    input             CE_HALF,   // clock-enable marking the CPU clock's HALF
+                                 // cycle: the T1 AD address->data turnaround
+`endif
     input             RESET,
     input             READY,
     input             INT,
     input             NMI,
     input             POLL_N,
+`ifdef V30_MUXED_AD
+    // --- THE MULTIPLEXED VIEW (see THE BUS SHAPE in the header) ---
     inout      [19:0] AD,
     output     [19:0] AD_OE,     // the pads' own output enable (task #37)
+`else
+    // --- ...and its read-data half, when there is no AD to carry it ---
+    input      [15:0] DATA_I,    // read data (AD[15:0] carries it when muxed)
+`endif
+    // --- THE DE-MUXED BUS (always present) ---
+    output     [19:0] ADDR_O,    // the owning cycle's linear address
+    output     [15:0] DATA_O,    // the owning cycle's write word
+    output      [3:0] STATUS_O,  // {md8080, psw_ie, seg} -- the PS nibble
     output      [1:0] QS,
     output      [2:0] BS,
     output            RD_N,
@@ -92,13 +145,16 @@ logic   [1:0] scr_qop = '0;
 wire  [7:0] q_byte;
 wire        q_ripe, q_ripe_lead_n;
 wire  [3:0] q_cnt;
-wire        eu_ghost_full, eu_ghost_idle, eu_ghost_stack_first, eu_rd_wait;
+wire        eu_ghost_full, eu_ghost_idle, eu_ghost_stack_first;
+// the launch-law's publications (the 8F ghost read's two drivers)
+wire        eu_ghost_row, eu_ghost_acc;
+wire [19:0] eu_ghost_sp, eu_ghost_bare;
 wire        eu_pop, eu_first, eu_flush;
 wire        eu_flush_pre, eu_flush_rep, eu_flush_stage, eu_flush_pend;
 wire        eu_flush_nmi, eu_flush_int_live;
 wire [15:0] eu_flush_cs, eu_flush_cs_old, eu_flush_ip;
 wire        eu_flush_cs_we;
-wire        eu_post, eu_post_hold, eu_ghost_preview, eu_halt_irq, eu_vector_post;
+wire        eu_post, eu_post_hold, eu_halt_irq, eu_vector_post;
 wire        eu_word, eu_pair, eu_pair2, eu_split;
 wire        eu_slot_busy, eu_slot_busy_n, eu_access_active;
 wire        eu_direct_fetch, eu_fetch_tail;
@@ -140,7 +196,82 @@ end
 
 assign SS_BUS_QUIET = ss_biu_bus_quiet;
 
+//----------------------------------------------------------------------------
+// THE ce/ce_half CONTRACT, ENFORCED IN THE MODULE  (USER RULING 2026-08-13)
+//----------------------------------------------------------------------------
+// "Correct the guidance on ce and ce_half. They do not need to be separated by
+//  a clock, they just cannot be enabled at the same time, we should have an
+//  assert in the module that prevents that."
+//
+// THE CONTRACT IS ONE PREMISE:
+//
+//   C-a  `CE` and `CE_HALF` are never asserted on the same fabric clock.
+//
+// ADJACENT ASSERTIONS ARE LEGAL.  That is not a hypothetical -- M72 drives the
+// ucore from a catch-up train whose phases strictly alternate one per fabric
+// clock during a burst (`docs/notes/m72_downstream_timing_2026-08-12.md` §1).
+// The 2026-08-12 "one cycle gap" clause (C-b) and the `ce -> ce >= 4`
+// arithmetic derived from it (C-c) are DELETED.
+//
+// AND ONE STRUCTURAL FACT ABOUT THIS CORE, WHICH IS NOT A CONTRACT CLAUSE:
+//
+//   S-1  at least one `CE_HALF` falls between consecutive `CE`s.
+//
+// This is the core's own functional requirement, not an assumption about a
+// train's shape: `ce_half` is the only enable on `v30u_biu|t1_half2`, and
+// `t1_half2` is the T1 address->data turnaround that gates `ad_oe_data`
+// (`v30u_biu.sv:1056/1062/1080`).  A `CE -> CE` with no `CE_HALF` between them
+// leaves the ADDRESS on AD for a whole write cycle.  A platform that does this
+// has already broken the core, so asserting it is no stronger than "the core
+// works" -- and S-1 is what makes `CE -> CE >= 2` true CONTRACT-FREE, which is
+// the whole of `nec_test.sdc`'s remaining CE exception.  Extra `CE_HALF`s in a
+// gap are harmless: `t1_half2`'s update is idempotent.
+//
+// WHY IT IS HERE AND NOT IN A TESTBENCH.  `hdl/tb/ce_contract_check.sv` was
+// instantiated in three testbenches and saw only those three.  This block is
+// in the core module, so EVERY instantiation inherits it -- including any
+// downstream integrator's simulation, which is where the trains this contract
+// exists for actually come from.  That checker is retired.
+//
+// `$fatal`, not `$error`: a train outside the envelope has invalidated every
+// row downstream of it, so continuing produces a SCORED NUMBER taken outside
+// the contract -- which is exactly what happened when the golden scorer ran at
+// `--ce-div 1` (`docs/notes/t1_half2_posedge_results_2026-08-13.md` §5.1).
+//
+// NON-VACUITY is a registered deliverable, not a hope:
+// `docs/notes/ce_contract_correction_prereg_2026-08-13.md` §3, P-1.
+//
+// ⚠ 2026-08-14: BOTH CLAUSES NAME `CE_HALF`, SO BOTH LIVE UNDER
+// `V30_MUXED_AD` WITH THE PIN.  Without the multiplexed bus there is no
+// `CE_HALF` port, and C-a -- "they are never asserted on the same fabric
+// clock" -- is VACUOUS BY CONSTRUCTION: there is no second enable to coincide
+// with.  S-1 goes with it for the same reason, and it loses nothing, because
+// what S-1 protects is `t1_half2`, the T1 address->data turnaround, which a
+// de-muxed bus does not have.  A de-muxed integrator's only enable contract is
+// `CE`, and the core has no clause to state about a single enable.
 `ifndef SYNTHESIS
+`ifdef V30_MUXED_AD
+// has a CE_HALF been seen since the last CE?  Starts asserted so a run's FIRST
+// CE is never reported -- there is no preceding CE for it to be too close to.
+logic ce_half_since_ce = 1'b1;
+
+always @(posedge CLK) begin
+    if (CE && CE_HALF)
+        $fatal(1, "v30_core: ce/ce_half CONTRACT VIOLATED (C-a) at %0t -- CE and CE_HALF asserted on the SAME fabric clock.  They may be adjacent; they may not coincide.  USER RULING 2026-08-13; see hdl/nec_test.sdc and docs/notes/ce_contract_correction_prereg_2026-08-13.md.",
+               $time);
+
+    if (CE && !ce_half_since_ce)
+        $fatal(1, "v30_core: ce/ce_half REQUIREMENT VIOLATED (S-1) at %0t -- two CEs with NO CE_HALF between them.  CE_HALF is the only enable on t1_half2, which is the T1 address->data turnaround gating ad_oe_data: without it the BIU leaves the ADDRESS on AD for a whole write cycle.",
+               $time);
+
+    if (CE_HALF)  ce_half_since_ce <= 1'b1;
+    else if (CE)  ce_half_since_ce <= 1'b0;
+end
+`endif
+
+// The SAVE-STATE contract is bus-shape independent and is asserted in every
+// configuration.  (It was in the block above until 2026-08-14, when the two
+// ce/ce_half clauses moved under `V30_MUXED_AD` and it could not follow them.)
 always @(posedge CLK) begin
     if (SS_WE && CE)    $error("SS_WE asserted while CE high (core not frozen)");
     if (SS_WE && RESET) $error("SS_WE asserted during RESET");
@@ -161,23 +292,34 @@ wire q_flush = scr_en ? (scr_qop == 2'b10)                     : eu_flush;
 wire [15:0] flush_cs = scr_en ? bkd_regs[144 +: 16] : eu_flush_cs;
 wire [15:0] flush_ip = scr_en ? bkd_fetch_ip        : eu_flush_ip;
 
+`ifdef V30_MUXED_AD
 wire [19:0] ad_o;
 wire        ad_oe_addr, ad_oe_ps, ad_oe_data;
+`endif
 
 v30u_biu u_biu (
     .clk        (CLK),
     .ce         (CE),
+`ifdef V30_MUXED_AD
     .ce_half    (CE_HALF),
+`endif
     .srst       (RESET),
     .bs         (BS),
+`ifdef V30_MUXED_AD
     .ad_o       (ad_o),
     .ad_oe_addr (ad_oe_addr),
     .ad_oe_ps   (ad_oe_ps),
     .ad_oe_data (ad_oe_data),
+    .ad_i       (AD[15:0]),
+`else
+    .ad_i       (DATA_I),
+`endif
+    .addr_o     (ADDR_O),
+    .data_o     (DATA_O),
+    .status_o   (STATUS_O),
     .ube_n      (UBE_N),
     .rd_n       (RD_N),
     .qs         (QS),
-    .ad_i       (AD[15:0]),
     .ready      (READY),
     .psw_ie     (psw_ie),
     .md8080     (md8080),
@@ -200,7 +342,6 @@ v30u_biu u_biu (
     .flush_ip   (flush_ip),
     .eu_post    (scr_en ? 1'b0 : eu_post),
     .eu_post_hold(scr_en ? 1'b0 : eu_post_hold),
-    .eu_ghost_preview(scr_en ? 1'b0 : eu_ghost_preview),
     .eu_halt_irq(scr_en ? 1'b0 : eu_halt_irq),
     .eu_vector_post(scr_en ? 1'b0 : eu_vector_post),
     .eu_bs      (eu_bs),
@@ -218,7 +359,10 @@ v30u_biu u_biu (
     .eu_ghost_full(eu_ghost_full),
     .eu_ghost_idle(eu_ghost_idle),
     .eu_ghost_stack_first(eu_ghost_stack_first),
-    .eu_rd_wait(eu_rd_wait),
+    .eu_ghost_row(eu_ghost_row),
+    .eu_ghost_acc(eu_ghost_acc),
+    .eu_ghost_sp(eu_ghost_sp),
+    .eu_ghost_bare(eu_ghost_bare),
     .eu_pair    (scr_en ? 1'b0 : eu_pair),
     .eu_pair2   (eu_pair2),
     .eu_wdata   (eu_wdata),
@@ -272,7 +416,6 @@ v30u_eu u_eu (
     .flush_ip   (eu_flush_ip),
     .eu_post    (eu_post),
     .eu_post_hold(eu_post_hold),
-    .eu_ghost_preview(eu_ghost_preview),
     .eu_halt_irq(eu_halt_irq),
     .eu_vector_post(eu_vector_post),
     .eu_bs      (eu_bs),
@@ -290,7 +433,10 @@ v30u_eu u_eu (
     .eu_ghost_full(eu_ghost_full),
     .eu_ghost_idle(eu_ghost_idle),
     .eu_ghost_stack_first(eu_ghost_stack_first),
-    .eu_rd_wait(eu_rd_wait),
+    .eu_ghost_row(eu_ghost_row),
+    .eu_ghost_acc(eu_ghost_acc),
+    .eu_ghost_sp(eu_ghost_sp),
+    .eu_ghost_bare(eu_ghost_bare),
     .eu_pair    (eu_pair),
     .eu_pair2   (eu_pair2),
     .eu_wdata   (eu_wdata),
@@ -333,6 +479,7 @@ v30u_eu u_eu (
     .ss_rdata   (ss_eu_rdata)
 );
 
+`ifdef V30_MUXED_AD
 // AD drive (simple en?val:'z forms only - Verilator requirement).
 // AD[19:16] carry the address during address phases and PS3-0 during the
 // data phase; AD[15:0] additionally carry write data.
@@ -356,6 +503,7 @@ assign AD[19:16] = (ad_oe_addr | ad_oe_ps)   ? ad_o[19:16] : 4'hz;
 // `net === 1'bz` on an internal tri-state and deletes the retention register
 // -- is removed by construction, because the model no longer asks the net.
 assign AD_OE = {{4{ad_oe_addr | ad_oe_ps}}, {16{ad_oe_addr | ad_oe_data}}};
+`endif  // V30_MUXED_AD
 
 // BUSLOCK is not implemented (inherited scope note; the FSM core drives it
 // from the EU's LOCK prefix, which U2 restores).

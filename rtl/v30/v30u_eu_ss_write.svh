@@ -86,10 +86,6 @@
             SSA_E_EA_RESIDUE:          ea_residue_n = ss_wdata;
             SSA_E_EA_PAIR_RHS:         ea_pair_rhs_n = ss_wdata;
             SSA_E_EA_PAIR_VALID:       ea_pair_valid_n = ss_wdata[0];
-            SSA_E_GHOST_FEED:          ghost_rd_feed_n = ss_wdata[0];
-            SSA_E_GHOST_READY:         ghost_rd_ready_n = ss_wdata[0];
-            SSA_E_OPC_RM_VALID:        opc_rm_valid_n = ss_wdata[0];
-            SSA_E_OPC_RM_BYTE:         opc_rm_byte_n = ss_wdata[7:0];
             SSA_E_RDQ0:                rdq0_n = ss_wdata;
             SSA_E_RDQ1:                rdq1_n = ss_wdata;
             SSA_E_RDQ_N:               rdq_n_n = ss_wdata[1:0];

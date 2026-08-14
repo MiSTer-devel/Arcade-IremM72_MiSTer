@@ -159,7 +159,7 @@ always @(posedge CLK_32M) begin
     end
 end
 
-reg ce_cpu, ce_cpu_half, ce_mcu;
+reg ce_cpu, ce_mcu;
 
 // CE-freeze stall: withhold the CPU clock train while an SDRAM access is
 // outstanding. The new-request term covers the 1-clk gap between a request
@@ -171,18 +171,25 @@ wire cpu_stall = mem_rq_active | cpu_new_sdr_req;
 
 // Steady-rate CPU clock with catch-up (ce_steady mechanism, as in the IGSPGM
 // core): a free-running reference counts the target 8MHz CPU clocks; the CPU
-// counter chases it, issuing CE/CE_HALF phases back-to-back (one per fabric
-// clock, 16MHz effective) whenever it is behind. SDRAM stalls therefore
-// defer CPU cycles instead of losing them, and the average CPU rate stays at
-// exactly 8MHz - the real board has no such stalls. The reference pauses
-// with `paused` so no backlog accumulates across the pause feature.
+// counter chases it whenever it is behind. SDRAM stalls therefore defer CPU
+// cycles instead of losing them, and the average CPU rate stays at exactly
+// 8MHz - the real board has no such stalls. The reference pauses with
+// `paused` so no backlog accumulates across the pause feature.
+//
+// THE COUNTER STILL ADVANCES TWO PER CPU CYCLE, and `ce_cpu` is still only
+// its EVEN phase, even though the de-muxed v30_core takes ONE clock enable
+// and CE_HALF is gone (2026-08-14).  The odd slot is now an idle fabric clock
+// rather than a second strobe, and it is deliberately kept: it is what holds
+// two `ce_cpu` pulses at least TWO fabric clocks apart, which is the premise
+// the ucore CE multicycle in Arcade-IremM72.sdc is derived from.  Collapsing
+// it to one count per CPU cycle would make the catch-up burst 32MHz and that
+// exception a lie.
 reg [1:0] ce_steady_div;
 reg [9:0] ce_steady_count;
 reg [10:0] ce_cpu_count; // [0] selects the CE (0) / CE_HALF (1) phase
 
 always @(posedge CLK_32M) begin
     ce_cpu <= 0;
-    ce_cpu_half <= 0;
     ce_mcu <= 0;
 
     if (~paused && ~ss_cpu_quiesce) begin
@@ -191,7 +198,6 @@ always @(posedge CLK_32M) begin
 
         if (~cpu_stall && ce_cpu_count[10:1] != ce_steady_count) begin
             ce_cpu      <= ~ce_cpu_count[0];
-            ce_cpu_half <=  ce_cpu_count[0];
             // Tie the MCU CE to the V30 CE phase: the MCU advances (and stalls)
             // in lockstep with the bursty catch-up V30, holding the shared-RAM
             // protection handshake at a constant V30<->MCU phase relationship
@@ -647,7 +653,6 @@ end
 v30_bus #(.SS_IDX(SSIDX_V30)) v30(
     .clk(CLK_32M),
     .ce(ce_cpu),
-    .ce_half(ce_cpu_half),
     .reset(~reset_n),
     .ready(v30_ready),
 

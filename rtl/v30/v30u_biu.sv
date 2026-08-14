@@ -93,27 +93,84 @@
 //  --- CE DISCIPLINE (docs/notes/ce_plan.md) --------------------------------
 //
 //  Nothing clocked runs unless `srst` or `ce`; reset is ungated so `bkd_load`
-//  fires regardless of CE.  There is exactly ONE negedge process, `t1_half2`
-//  (the T1 AD half), gated by `ce_half`.
+//  fires regardless of CE.  There is NO negedge process in the BIU -- and,
+//  with `v30u_eu.sv:48`, none anywhere in the synthesised core, since
+//  2026-08-13.  `t1_half2` (the T1 AD half) is a POSEDGE flop enabled by
+//  `ce_half`; it was the last negedge flop in the design.
+//  ⚠ THE ARCHIVED FSM CORE (`hdl/rtl/core/v30_biu.sv`) KEEPS ITS NEGEDGE
+//  `t1_half2` and is deliberately NOT touched -- `fsm_core_archive_2026-08-04.md`.
+//
+//  --- THE DE-MUXED BUS, AND `V30_MUXED_AD` (2026-08-14) -------------------
+//
+//  The V30 multiplexes one twenty-pin bus three ways because a 40-pin DIP has
+//  no room for sixty pins.  Inside an FPGA that constraint does not exist.
+//  THE WHOLE OF THE MULTIPLEXING LAW IS ONE SENTENCE:
+//
+//      A19-16 carries the ADDRESS's top nibble during the address ONE-SHOT
+//      and the STATUS nibble otherwise; A15-0 carries the address low during
+//      an address phase and the WRITE DATA otherwise.
+//
+//  It has exactly three operands -- an address, a write word, a status nibble
+//  -- and every one of them was already a register in this module.  So the
+//  de-mux is a RE-SLICING OF A MUX, not a new mechanism, and it adds NO FLOP.
+//  The three are published as `addr_o` / `data_o` / `status_o`, which exist in
+//  every configuration; their contracts are written at THE DE-MUXED BUS below.
+//
+//  `V30_MUXED_AD` selects whether the multiplexed VIEW exists at all.  It is
+//  orthogonal to `SYNTHESIS` (fabric-vs-sim): this one is the BUS SHAPE.
+//    defined   -- `ad_o` / `ad_oe_*` / `ce_half` / `t1_half2` are present, and
+//                 `ad_o` is COMPOSED from the three ports above, so there is
+//                 no second derivation to drift.  The rig builds this way and
+//                 it is byte-identical to the pre-2026-08-14 behaviour.
+//    undefined -- those PORTS are gone, `ce_half` and `t1_half2` with them
+//                 (`t1_half2` has ZERO consumers in the next-state logic --
+//                 `t1_half2_anatomy_2026-08-13.md` §1.3), and the read data
+//                 arrives on the core's `DATA_I` instead of on `AD`.
+//                 A define-OFF build is a DIFFERENT SAVE-STATE STREAM: the
+//                 flop's address has no flop behind it and reads 0.  (Naming
+//                 that address here would be a THIRD textual reference and
+//                 `ss_lint` counts them -- it caught exactly that on this
+//                 comment's first draft, as it did on the 08-13 one below.)
+//
+//  ⚠ WHAT THE DEFINE DOES NOT REMOVE, and this is a FINDING of the wave: the
+//  multiplexed view's VALUE (`ad_o` / `ad_oe_*`) is still computed, because
+//  THE AD OUTPUT LATCH HAS A FUNCTIONAL CONSUMER -- F58 makes a HALT
+//  pseudo-cycle publish it (see THE AD OUTPUT LATCH below).  The shared-pad
+//  drive is machine state, so a de-muxed core keeps it and drops only the
+//  pins.  The phase it needs comes from `bus_half`, which is what `t1_half2`
+//  equals at every `ce` -- derived from S-1 and ASSERTED, not assumed.
+//  `docs/notes/demux_bus_prereg_2026-08-14.md`.
 //
 //============================================================================
 
 module v30u_biu (
     input             clk,
     input             ce,
-    input             ce_half,
+`ifdef V30_MUXED_AD
+    input             ce_half,     // MUXED-BUS ONLY: `t1_half2`'s only enable
+`endif
     input             srst,
 
     // --- chip pins (composed in the top) ---
     output      [2:0] bs,
+`ifdef V30_MUXED_AD
+    // THE MULTIPLEXED VIEW, as PORTS.  Present only when `V30_MUXED_AD` is
+    // defined; it is COMPOSED from the de-muxed bus below and owns no operand
+    // of its own.  ⚠ The view itself is computed in EVERY configuration -- see
+    // THE AD OUTPUT LATCH below; only its exposure is conditional.
     output     [19:0] ad_o,
     output            ad_oe_addr,
     output            ad_oe_ps,
     output            ad_oe_data,
+`endif
+    // --- THE DE-MUXED BUS (always present) --- see THE DE-MUXED BUS below
+    output     [19:0] addr_o,      // the owning cycle's linear address
+    output     [15:0] data_o,      // the owning cycle's write word
+    output      [3:0] status_o,    // {md8080, psw_ie, seg} -- the PS nibble
     output            ube_n,
     output            rd_n,
     output      [1:0] qs,          // F1: the BIU owns the QS port
-    input      [15:0] ad_i,
+    input      [15:0] ad_i,        // read data (from AD[15:0] or from DATA_I)
     input             ready,
 
     // --- machine state the pins carry (M9) ---
@@ -142,7 +199,6 @@ module v30u_biu (
     // --- EU bus requests (M10: ONE request slot) ---
     input             eu_post,     // post an access this clock
     input             eu_post_hold,// reserve now, arbitrate on next idle clock
-    input             eu_ghost_preview, // PF_LOST status preview, then direct T1
     input             eu_halt_irq, // first INTA belongs to a HALT wake
     input             eu_vector_post,
     input       [2:0] eu_bs,       // 0 INTA 1 IOR 2 IOW 5 MEMR 6 MEMW
@@ -160,7 +216,13 @@ module v30u_biu (
     output            eu_ghost_full,
     output            eu_ghost_idle,
     output            eu_ghost_stack_first,
-    output            eu_rd_wait,
+    // THE 8F GHOST READ IS DECORATED AT **LAUNCH**.  The EU hands over the two
+    // drivers' composed addresses and the currency of its own micro-row; the
+    // age and the pick are here, at `g_age` and the commit mux.
+    input             eu_ghost_row,
+    input             eu_ghost_acc,
+    input      [19:0] eu_ghost_sp,
+    input      [19:0] eu_ghost_bare,
     input             eu_pair,     // pair write data into the reserved cycle
     input             eu_pair2,    // ...and it fills TWO of them (a split)
     input      [15:0] eu_wdata,
@@ -264,6 +326,10 @@ reg        cmt_was_owed;  // M19's latch as it stood before the grant
 // --- pad retention ---------------------------------------------------------
 reg        last_ube;
 reg [15:0] last_fetch_addr;
+// F58: THE AD OUTPUT LATCH ITSELF, one lane per output enable.  See the
+// always block near `last_ube` and the HALT display in step (e).
+reg  [3:0] last_ad_hi;
+reg [15:0] last_ad_lo;
 
 // --- the queue (M3) --------------------------------------------------------
 reg  [7:0] q_mem [0:5];
@@ -329,6 +395,21 @@ reg        rq_wr   [0:1];
 reg        rq_need [0:1];
 reg        rq_last [0:1];
 reg        rq_late [0:1];
+// THE 8F GHOST READ'S LAUNCH DECORATION.  `dGR` is the clocks from the ghost
+// micro-row going current to the BIU launching its cycle, and the law
+// (`ghost_launch_law_results_2026-08-11.md`, 200/200) is
+//     dGR == 0 -> SS:SP     dGR == 1 -> stale & SP     dGR >= 2 -> stale
+// -- two drivers whose windows overlap for exactly one clock.  `g_age` IS
+// `dGR`, saturating at 2 because the law needs no more; `g_row_q` makes the
+// arm the ROW'S RISING EDGE, which is the law's own anchor; `g_sp`/`g_bare`
+// are the two drivers' composed addresses, captured at that arm.  The AND is
+// not carried: it is `rq_addr[]`, the value the EU posts.
+reg        rq_ghost [0:1];
+reg        cmt_ghost;
+reg [19:0] g_sp;
+reg [19:0] g_bare;
+reg  [1:0] g_age;
+reg        g_row_q;
 reg        slot_busy;
 reg        slot_accept;
 reg  [1:0] opr_held;
@@ -344,6 +425,14 @@ reg        inta_halt_l;    // combinational HALT-announcement withdrawal edge
 reg  [1:0] done_ctr;      // eu_done lands at e+2 -- see the T4 block
 reg        done_wr;
 reg        rd_done_p;
+// P1: `r_wr_done_p`'s ONE functional consumer was `flush_staged_eval`'s fitted
+// `!r_wr_done_p`, and that term is deleted (see the P1 block below), so this
+// flop is now driven, reset and saved but read only by the save-state mux.
+// It is DELIBERATELY left in place with its save-state address (9'h05A) --
+// retiring one is the save-state owner's call, and `ss_lint` must stay
+// UNMOVED across this landing.  Booked, not taken.  (Do not name the SSA
+// symbol here: `ss_lint` counts its occurrences and a third one FAILS the
+// gate.  That is the lint working, and it caught this comment.)
 reg        wr_done_p;
 reg        opr_free_p;
 reg [15:0] rd_val;        // OPR, shadowed (see M5b / the string loops)
@@ -358,8 +447,12 @@ reg [15:0] rd_land;
 // --- M2r: the ONLY wait mechanism -----------------------------------------
 reg        ready_prev;
 
-// --- the one negedge process ----------------------------------------------
+// --- the T1 AD half: a POSEDGE flop enabled by `ce_half` (was the design's
+//     one negedge process until 2026-08-13).  MUXED-BUS ONLY since 2026-08-14:
+//     it exists to move a SHARED pin and has no next-state consumer. ---------
+`ifdef V30_MUXED_AD
 reg        t1_half2;
+`endif
 
 // --- THE REGISTERS (F7).  Written ONLY by the one `always_ff` at
 //     the end of this module; every name above is the NEXT-STATE
@@ -446,6 +539,12 @@ reg r_rq_wr [0:1];
 reg r_rq_need [0:1];
 reg r_rq_last [0:1];
 reg r_rq_late [0:1];
+reg r_rq_ghost [0:1];
+reg r_cmt_ghost;
+reg [19:0] r_g_sp;
+reg [19:0] r_g_bare;
+reg [1:0] r_g_age;
+reg r_g_row_q;
 
 integer ri;   // the always_comb's array copy-in
 integer rj;   // the always_ff's array commit
@@ -478,7 +577,7 @@ wire ann_kill  = (q_flush ||
 wire display   = r_cmt_valid && !ann_kill;
 
 // The REP-withdrawal FLUSH can use the redirect edge as an idle arbitration
-// point.  Empty tails normally open T1 directly.  An NMI that meets the
+// point.  Empty tails open T1 directly.  An NMI that meets the
 // younger decoder landing (dage <= 4) withdraws that point; the older landing
 // has already crossed it.  A staged read tail normally owns the edge, except
 // when a still-asserted maskable INT meets it after no write completion on the
@@ -491,15 +590,108 @@ wire display   = r_cmt_valid && !ann_kill;
 // existing phase/ownership rails: there is no interrupt counter, queue, or
 // identity table.
 //
+// THE ASSERTED PIN WITHDRAWS THE DIRECT POINT ON *EITHER* TAIL.  `flush_int_live`
+// was read by the staged arm only, and the empty arm took the direct point
+// unconditionally.  It is ONE rail and it acts the same way on both: while the
+// maskable pin is still asserted at the withdrawal the redirect takes an
+// ordinary idle eval, so EMPTY stands on the FLUSH row and the announcement
+// gets its own clock.  Two disjoint populations, each unanimous:
+//   pin ASSERTED  -> ordinary eval : v0.1 `INT.F3AA`, 35 of 35 empty-tail
+//                    withdrawals (rows 17-22 of each; the golden is silicon)
+//   pin RELEASED  -> direct T1     : fz2c+fz2e, 17 of 17 empty-tail
+//                    withdrawals over 623 seeds, all at pin low
+// The rail is the PIN, not a flush-clock strobe, because the empty arm has to
+// read it one row EARLY (`flush_pre`) as well as on the flush row itself.
+// FALSIFIER: an empty-tail withdrawal whose maskable pin CHANGES between those
+// two adjacent clocks -- the two reads then disagree and EMPTY is shown twice
+// or not at all.  No instance exists in either population above.
+//
 // SOCKET, 2026-08-06, row 7.40.7 -> redirected CODE T1:
 //   empty/direct: mc1/874, mc2/700,2408,3758; NMI-age boundary: mc1/410,607
 //   staged/slow:  mc2/633,1616, t30-raw/235; live-INT exception: mc2/573
+//
+// ...AND THE STAGED TAIL FINALLY READS THE SAME RAIL THE SENTENCE ABOVE IS
+// ABOUT.  `flush_int_live` is the MASKABLE pin, and both populations that
+// sentence was measured on are maskable ones; the STAGED arm was given that
+// rail alone and the NON-MASKABLE recognition was never given to it at all.
+// `flush_src_live` is the recognition standing at the withdrawal, whichever
+// unit raised it -- the live maskable pin, or the part's own NMI latch, which
+// is exactly the pair `v30u_eu.sv` publishes as "the two interrupt rails that
+// physically meet the withdrawal edge".
+//
+// It replaces `flush_staged_eval` IN THE DISPLAY ONLY, where that wire is
+// subsumed by construction (`flush_staged_eval` implies `flush_int_live`
+// implies `flush_src_live`).  **`flush_staged_eval` ITSELF IS NOT TOUCHED**,
+// because it has a SECOND consumer that is not a display at all -- the idle
+// clock's arbitration point in step (c) -- so this landing is display-only by
+// construction as well as by intent.  ONE term swapped in ONE expression, one
+// wire added, no flop and no save-state address.
+//
+// ...AND P1 IS THAT SECOND CONSUMER.  The paragraph above is A1's, and A1's
+// own results named what it left behind: "after a REP withdrawal that is not
+// bus-limited, the ucore's restart -- the redirected fetch and everything
+// behind it -- is still one clock late."  It is ONE ARBITER and it must read
+// ONE RAIL, so `flush_staged_eval` now reads `flush_src_live` too, and the
+// display and the arbitration point are finally the same statement about the
+// same edge:
+//
+//   a STAGED withdrawal yields the flush clock's arbitration point to the
+//   redirect exactly when a recognition is standing at the withdrawal --
+//   maskable pin or NMI latch, whichever unit raised it -- and nothing else
+//   is outstanding (`flush_idle`).  The redirect then commits on the
+//   withdrawal clock itself and its CODE status is announced at
+//   `withdrawal + 1`, instead of being deferred to F3's flush-only point and
+//   announced at `withdrawal + 2`.
+//
+// `!r_wr_done_p` -- "no write completion on the preceding clock" -- is DELETED
+// rather than re-fitted.  It is a one-clock lookback with no mechanism behind
+// it, and silicon falsifies it 2 for 2 on the only clocks in the fz2 corpus
+// that exercise it (`fz2c/408000` and `fz2e/526025`, both `r_wr_done_p = 1`,
+// both announced at `withdrawal + 1`).  `flush_stage` and `flush_idle` are
+// KEPT: they are ownership rails with a stated mechanism, not fits.
+//
+// MEASURED, and the statement is exact rather than statistical.  Over all 677
+// retained fz2 captures there are 20 REP-withdrawal clocks still in LOCKSTEP
+// with silicon at the withdrawal.  Twelve are staged-and-idle with the NMI
+// latch standing and the maskable pin RELEASED: silicon announces at +1 and
+// the ucore announced at +2 on 12 of 12.  The other eight are unanimous the
+// other way -- three have `run = 1` and never reach this arm, one has
+// `cmt_valid = 1` and never reaches it either, one has `flush_pend = 0` so
+// the suppression is already inactive, and three are empty tails on the
+// `flush_direct`/`flush_fast` path -- and all eight ALREADY AGREE with
+// silicon.  **The set of clocks this edit changes in the whole retained
+// corpus is exactly those twelve.**
+//
+// FALSIFIER: a staged REP withdrawal on an idle clock with a standing
+// recognition and no outstanding EU request, where silicon still announces
+// the post-flush CODE status at `withdrawal + 2`.
+// SECOND FALSIFIER, for the deleted term: the same, with a write completion
+// on the preceding clock (`r_wr_done_p = 1`).
+//
+// NOT THE CANDIDATE THAT WAS PROPOSED, and the refutation is on the rows:
+// `flush_nmi_young`'s fitted `<= 4` cannot be the carrier here, because
+// `flush_direct` is 0 on all twelve by `flush_stage` ALONE -- upstream of it
+// in the same AND -- and because `flush_nmi_young` is 1 on seven of the twelve
+// and 0 on five while the divergence signature is identical on all of them.
+// It is untouched.  `docs/notes/fz2_p1_prereg_2026-08-10.md`.
+//
+// MEASURED, fz2 corpus, and the statement is engine-free: over the 356
+// retained event-free captures the EMPTY display is held by the
+// REP-withdrawal suppression AND BY NOTHING ELSE on 13 clean-prefix rows; all
+// 13 are the STAGED arm with the NMI latch standing, and silicon shows EMPTY
+// on that very row on 13 of 13.  The `direct` arm produces no such row at all.
+// The queue port still wins and silicon agrees: `fz2c/408062` is a banked
+// SUCCESS in which these same rails are set at row 3257 while a CODE fetch
+// owns the port (`qs_port_fetch`), and BOTH legs put EMPTY at 3259.
+// FALSIFIER: a staged REP withdrawal meeting a standing recognition with the
+// queue port otherwise free, where silicon still delays EMPTY one clock.
 wire flush_idle = !r_run && !r_cmt_valid && (r_rq_n == 2'd0) && !eu_post;
 wire flush_nmi_young = flush_nmi && (r_dage <= 3'd4);
-wire flush_staged_eval = flush_stage && flush_pend && flush_int_live &&
-                         !r_wr_done_p && flush_idle;
-wire flush_fast = flush_rep && flush_idle && !flush_stage &&
-                  !flush_nmi_young;
+wire flush_src_live = flush_int_live || flush_nmi;
+wire flush_staged_eval = flush_stage && flush_pend && flush_src_live &&
+                         flush_idle;
+wire flush_direct = !flush_stage && !flush_nmi_young && !flush_int_live;
+wire flush_fast = flush_rep && flush_idle && flush_direct;
 // A hardware acknowledge posted on a CODE T4 replaces a speculative CODE
 // announcement already waiting behind that fetch.  The status decoder sees
 // the replacement on the collision clock; the ordinary committed-request
@@ -517,12 +709,42 @@ wire inta_follow_preview = eu_post && (eu_bs == BS_INTA) &&
                            r_rd_was_split;
 wire inta_preview = inta_tail_replace || inta_follow_preview;
 wire vector_follow_preview = eu_vector_post && r_rd_was_split;
-// The withdrawn wake fetch loaded the status latch before HALT's final phase.
-// Keep CODE visible on that T4 even though the request has been rewound; the
-// following clock is the measured PASV arbitration gap.
-wire halt_withdraw_preview = eu_halt_irq && r_run && r_cur_halt &&
-                             (r_ts == TS_T4) && !r_cmt_valid &&
-                             (r_cdage == 3'd2);
+// A WITHDRAWN ANNOUNCEMENT IS RELEASED ON ITS OWN CLOCK, AND `bs` HAS ONLY
+// ONE SAMPLE PER CLOCK TO SAY SO WITH.
+//
+// This arm used to force `BS_CODE` onto the HALT pseudo-cycle's T4 -- "keep
+// CODE visible on that T4 even though the request has been rewound".  On the
+// ADDRESS-PHASE sample that is right, and MEASURED: silicon reads
+// `bs_early = CODE` there in every one of the corpus's withdrawn-announcement
+// wakes.  On the END-OF-CLOCK sample it is WRONG, and measured just as
+// directly -- the same rows read `bs_late = PASV`, against `bs_late = CODE`
+// on every GENUINE announcement including the T4 replacement (`fz2c/403020`
+// row 170).  A withdrawn announcement is a status latch being RELEASED; a
+// genuine one is a status latch being HELD into its T1.
+//
+// The end-of-clock sample is the one that MOVES THE MACHINE.  `nec_bus` -- the
+// harness, and the fabric hardware -- advances its T-state tracker out of T4
+// on `bs_q`, the end-of-clock sample (`nec_bus.sv` 322, 364-370), and it
+// advances the wait-LFSR ONCE PER BUS CYCLE AT T1 ENTRY.  Holding CODE to the
+// end of that clock therefore manufactures a PHANTOM T1 on the following
+// clock and STEALS A WAIT DRAW, and every later access in the run draws the
+// shifted count.  MEASURED on `fz2c/404071` / `fz2e/514044` / `fz2e/516001`:
+// the core's own arbitration is silicon's clock for clock through the whole
+// wake and both acknowledges -- a registered-state probe disagreed with the
+// replayed rows on 6 of 4,063 rows and they were exactly the six the phantom
+// cycle mislabels -- and the entire ~1,100-row divergence is downstream of
+// this one bit.
+//
+// So the arm comes OUT and the mux's own release logic answers: the commit
+// was rewound so `display` is false, `st_rel` is set on the HALT's T4, and
+// `bs` is `BS_PASV`.  THE ADDRESS-PHASE CODE IS NOT RECOVERED -- the ucore has
+// one status value per CPU clock where silicon has two, and that residue is
+// ONE CELL per wake, pre-registered and reported as such
+// (`docs/notes/ackwake_prereg_2026-08-11.md` §2.1 A-4).
+//
+// Falsifier: a capture in which a WITHDRAWN announcement carries its status on
+// the END-OF-CLOCK sample, or a GENUINE one is PASV there on the clock before
+// its T1.  Neither exists in the 654 retained fz2 captures.
 // A direct REP redirect is the one fetch whose T1 opened without a registered
 // announcement.  Its announcement age therefore remains zero for the whole
 // cycle; an ordinary fetch necessarily starts with cdage >= 1.  The other
@@ -536,12 +758,31 @@ assign eu_direct_fetch = r_run && r_cur_fetch && (r_cdage == 3'd0);
 assign eu_fetch_tail = (r_absorb_ttl == 2'd1) &&
                        ((!q_ripe && (r_dage <= 3'd4)) ||
                         (q_ripe && (r_dage == 3'd5)));
+// THE 8F GHOST READ'S THREE PUBLISHED RAILS -- ON THE REGISTERED READY, NOT
+// ON THE PIN.  §73 / R7', and it is this module's OWN discipline rather than a
+// workaround: M2r (the header, verbatim) says "the CPU registers READY at the
+// end of every clock", and every other READY consumer here already obeys it.
+// The ONLY places the bare pin appears are the `ts` advance itself and
+// `rd_data_edge`, §73's one declared carrier.  `5403671558` published these
+// rails off the bare pin, which made them R7' carriers into the EU; that is
+// what `sw/r7_lint.py` refuses.  Putting them where this module already puts
+// READY costs NO flop and NO save-state address.  (The registered pin's
+// save-state symbol is deliberately NOT spelled anywhere in this comment:
+// `ss_lint` counts those names by text and requires exactly two per symbol, so
+// naming one in prose is a third reference and a FAIL -- correctly.)
+//
+// THE FOURTH RAIL, `eu_rd_wait`, IS NOT HERE.  It has exactly one consumer in
+// `5403671558` and that consumer is the ghost FEED, which this landing does
+// not take: G6 measured the feed at 15.3 MHz on two draws with every worst
+// path launching from the READY register
+// (`docs/notes/ghost8f_results_2026-08-09.md` §9).
+//
 // During fetch T2/Tw the internal AD rail is fully precharged; later phases
 // leave the undocumented 8F register-POP address fighting the stack rail.
 assign eu_ghost_full = r_run && r_cur_fetch &&
                        ((r_ts == TS_T1) ||
-                        ((r_ts == TS_T2) && !ready) ||
-                        (((r_ts == TS_T3) || (r_ts == TS_TW)) && !ready));
+                        ((r_ts == TS_T2) && !r_ready_prev) ||
+                        (((r_ts == TS_T3) || (r_ts == TS_TW)) && !r_ready_prev));
 // The two other observable points are existing ownership states, not ghost
 // history.  At idle the internal address rail has discharged only to its
 // byte-slice boundaries.  On a fetch T4 with two ripe bytes, an odd stack
@@ -550,13 +791,8 @@ assign eu_ghost_full = r_run && r_cur_fetch &&
 // prints the resulting idle/T4 state.
 assign eu_ghost_idle = r_run && r_cur_fetch && (r_ts == TS_T4);
 assign eu_ghost_stack_first = r_run && r_cur_fetch &&
-                              (r_ts == TS_T3) && ready &&
+                              (r_ts == TS_T3) && r_ready_prev &&
                               (r_q_cnt >= 4'd2);
-// A younger read which is still held off by READY cannot put its own word on
-// the untagged data rail before an older PF_LOST completion.  Publish that
-// existing pin/ownership decision; no wait counter or new history is needed.
-assign eu_rd_wait = r_run && !r_cur_fetch && !r_cur_wr && !r_cur_halt &&
-                    !ready;
 
 // M1/M2r: the eval instant.  See the header.
 wire eval_inst = r_run && !r_evald &&
@@ -622,12 +858,11 @@ wire pop_now       = q_pop && q_ripe;
 // is a term of the flush clock and not a flop.
 wire e_from_block = q_flush && r_run && r_cur_fetch;
 wire qs_e_now = (r_e_pend || q_flush ||
-                (flush_pre && !flush_nmi_young)) &&
+                (flush_pre && flush_direct)) &&
                 !(q_flush && flush_rep &&
-                  ((!flush_stage && !flush_nmi_young) ||
-                   (flush_pend &&
-                    !(r_run && !r_cur_fetch && (r_ts < TS_T3)) &&
-                    !flush_staged_eval))) &&
+                  (flush_direct ||
+                   (flush_pend && !flush_src_live &&
+                    !(r_run && !r_cur_fetch && (r_ts < TS_T3))))) &&
                 !pop_now && !e_from_block &&
                 (r_absorb_ttl == 2'd0) && !qs_port_fetch &&
                 // (c) a ready-but-not-started EU request owns the next slot
@@ -644,7 +879,7 @@ wire qs_e_now = (r_e_pend || q_flush ||
                 // MEASURED: `E8 idx 1` shows E on the push's ANNOUNCEMENT
                 // clock (row 8), not on the flush row's own clock (row 7).
                 (((r_rq_n == 2'd0) && !eu_post) || q_flush ||
-                 (flush_pre && !flush_nmi_young) ||
+                 (flush_pre && flush_direct) ||
                  (r_cmt_valid && !r_cmt_fetch) || (r_run && !r_cur_fetch));
 
 assign qs = qs_e_now ? QS_EMPTY
@@ -693,8 +928,11 @@ assign ss_bus_quiet = !r_run && !r_cmt_valid && (r_rq_n == 2'd0) && !r_halt_pend
 //----------------------------------------------------------------------------
 // PIN DRIVE.  The comparator stack samples AD twice per clock: mid-clock (the
 // ADDRESS phase) and at the clock's end (the DATA phase).  `t1_half2` is the
-// negedge flop that switches a WRITE's AD15-0 from address to write data, so
-// the external T1-falling-edge address latch still sees the address.
+// `ce_half`-enabled flop that switches a WRITE's AD15-0 from address to write
+// data.  It flips at `ce_half`+1.0 fabric periods (it was +0.5 until
+// 2026-08-13), which is strictly inside the free window, so the external
+// T1-falling-edge address latch still sees the address -- and now sees it
+// unambiguously rather than by NBA ordering on the same edge.
 //----------------------------------------------------------------------------
 wire disp_inta = display && r_cmt_noaddr;
 wire cur_inta  = r_run && (r_ts == TS_T1) && r_cur_noaddr;
@@ -753,10 +991,8 @@ wire halt_addr = r_run && r_cur_halt && (r_ts == TS_T1);
 
 wire [19:0] flush_fast_addr = {flush_cs, 4'd0} + {4'd0, flush_ip};
 
-assign bs = halt_withdraw_preview ? BS_CODE
-          : inta_preview ? BS_INTA
+assign bs = inta_preview ? BS_INTA
           : vector_follow_preview ? BS_MEMR
-          : eu_ghost_preview ? eu_bs
           : flush_fast     ? BS_CODE
           : display        ? r_cmt_bs
           : (r_run && !st_rel) ? r_cur_bs
@@ -785,24 +1021,53 @@ assign ube_n = (display && (r_cdage != 3'd0)) ? r_cmt_ube_n
 // M23: the address one-shot is fired by the DISPLAY and is ONE CLOCK LONG;
 // where the bus made the T1 wait it has already expired and A19-16 is back on
 // the segment status while A15-0 holds the address by pad retention.
-wire [19:0] t1_addr = r_cur_late_t1 ? {data_ps(r_cur_seg), r_cur_addr[15:0]}
-                                  : r_cur_addr;
+//
+// 2026-08-14: M23 is now a PHASE, not a value.  It used to be spelled as a
+// `t1_addr` wire that substituted `data_ps(r_cur_seg)` into the address's top
+// nibble; it is `bus_ph_hi`'s `!r_cur_late_t1` term below, which selects the
+// SAME status nibble from `status_o`.  Nothing about the law moved.
 
 // A segment-register write and the display of an already-committed prefetch
 // share one physical address path.  The pending fetch is retargeted from the
-// new CS on that clock; a fetch whose T1 is already running is not.  The one
-// asymmetric rail is CS[8] -> A12: a rising bit arrives one fetch later while
-// a falling bit and every other measured CS bit arrive immediately.
+// new CS on that clock; a fetch whose T1 is already running is not.
 //
-// SOCKET, 2026-08-06, identical 8E /1 timing and source:
-//   old CS[8]=0, new CS=0500 -> first 04518, then 0551a
-//   old CS[8]=0, new CS=0700 -> first 06518, then 0751a
-//   old CS[8]=0, new CS=0400 -> first 04518, then 0451a
-//   old CS[8]=1, new CS=0400 -> first 13518, then 1351a
-// The last case is the falsifier: this is a delayed SET path, not retention.
-wire [15:0] cmt_cs_live = {flush_cs[15:9],
-                           flush_cs[8] & flush_cs_old[8],
-                           flush_cs[7:0]};
+// P5' -- ...AND THE VALUE THE ADDER SEES IS THE **WIRED AND** OF THE OLD AND
+// THE NEW CS, ON ALL SIXTEEN BITS.  A segment-register read taken WHILE THE
+// REGISTER IS BEING WRITTEN is a precharged read bus with two things pulling
+// on it -- the cell that still holds the old value and the write driver
+// presenting the new one -- so the adder gets `new & old`.  There is no
+// asymmetric bit and no delayed SET path: the CS[8] -> A12 rail this expression
+// used to carry was that AND seen through a tranche that varied only CS[8].
+//
+// SILICON, fz2 FLASH #15 corpus, and the two seats agree on all 16 bits:
+//   fz2c/406023 row 1230: new 59c9, old f171 -> chip fetch 5c946 = 5141:b536
+//   fz2e/527051 row  156: new cddb, old fe6a -> chip fetch d5f06 = cc4a:9a66
+//   59c9 & f171 == 5141   ·   cddb & fe6a == cc4a
+//
+// The 2026-08-06 SOCKET tranche this expression used to cite (four rows, all
+// of them varying CS[8] alone) is CONSISTENT with the AND but cannot
+// distinguish it from the one-bit rule, because that tranche's `old` CS value
+// is recorded nowhere -- not in the comment it was written into and not
+// anywhere in the tree.  It is therefore no longer quoted as the authority
+// here; the two 16-bit silicon agreements are.
+//
+// FALSIFIER: any capture in which the retargeted fetch address implies a CS
+// with a bit SET that is clear in `flush_cs` or clear in `flush_cs_old`.
+//
+// ⚠ WHAT THIS DOES NOT FIX, and it is four of the six measured seats: a CS-write
+// row that STALLS holds `flush_cs_we` for the whole stall, and `flush_cs`
+// during it is NOT the value that will be written (in fz2e/533028 it is the
+// instruction's DISPLACEMENT).  The chip writes the register ONCE and takes the
+// OLD CS for anything committed before that; the ucore acts on every clock of
+// the level, here and at `fetch_lin` below.  No flop-free predicate in this
+// module separates "the register is written THIS clock" from "a row that will
+// write it is stalled" -- `flush_cs != flush_cs_old` is true throughout, and
+// `r_cs_r` observes the change one clock too late.  The fix belongs to
+// `v30u_eu.sv` (`wr_cs1` qualified by the row committing).  Seats, booked:
+// fz2e/520062 @700, fz2e/528008 @628, fz2e/532012 @328, fz2e/533028 @881 --
+// each one's chip fetch is built from `flush_cs_old` exactly.
+// (docs/notes/fz2_p4p5_prereg_2026-08-10.md §2.2)
+wire [15:0] cmt_cs_live = flush_cs & flush_cs_old;
 wire [19:0] cmt_addr_live = {cmt_cs_live, 4'd0} +
                             {4'd0, r_cmt_prev_fp};
 wire cmt_cs_retarget = flush_cs_we && r_cmt_valid && r_cmt_fetch;
@@ -831,11 +1096,14 @@ wire [19:0] display_addr = cmt_cs_retarget ? cmt_addr_live : r_cmt_addr;
 // No flop is added and nothing outside the pin mux is touched.
 // Falsifier: any capture whose A19-16 carries an address on two consecutive
 // clocks of one announcement, or a segment status on the display clock itself.
-wire [3:0] disp_hi  = (r_cdage == 3'd0) ? display_addr[19:16]
-                                        : data_ps(r_cmt_seg);
-wire [3:0] dinta_hi = (r_cdage == 3'd0) ? 4'h0
-                                        : data_ps(r_cmt_seg);
-wire [3:0] cinta_hi = r_cur_late_t1 ? data_ps(r_cur_seg) : 4'h0;
+//
+// 2026-08-14: F53 too is now a PHASE.  Its three nibble wires (`disp_hi`,
+// `dinta_hi`, `cinta_hi`) were three copies of ONE decision -- "is A19-16
+// still in the address one-shot?" -- each carrying its own copy of the status
+// value.  They are `bus_ph_hi`'s `(r_cdage == 3'd0)` and `!r_cur_late_t1`
+// terms below, over ONE status operand.  The three copies survive VERBATIM in
+// the sim-only reference at THE RECONSTRUCTION FALSIFIER, which is what proves
+// the collapse changed nothing.
 
 // THE PAIRING IS A MID-CLOCK FACT.  `sim/biu_timed.cpp` fills `cur_.data` from
 // inside `mem_write`, which the EU calls DURING the clock, and the row that
@@ -855,23 +1123,111 @@ wire [15:0] cur_data_o = pair_now
                                         : eu_wdata)
                        : r_cur_data;
 
-assign ad_o = (vector_follow_preview && t1_half2) ? eu_addr
-            : flush_fast               ? flush_fast_addr
-            : disp_inta                ? {dinta_hi, 16'h0}
-            : cur_inta                 ? {cinta_hi, 16'h0}
-            : eu_ghost_preview         ? {data_ps(r_cur_seg), eu_addr[15:0]}
-            : display                 ? {disp_hi, display_addr[15:0]}
-            : halt_addr               ? r_cur_addr
-            : (r_run && (r_ts == TS_T1))  ? (r_cur_wr && t1_half2
-                                         ? {r_cur_addr[19:16], cur_data_o}
-                                         : t1_addr)
-                                      : {data_ps(r_cur_seg), cur_data_o};
+//----------------------------------------------------------------------------
+// THE DE-MUXED BUS.  Three operands, all of them already registers here.
+//
+// `bus_t1` is the running cycle's own T1; `bus_vfp_pub` is the instant the
+// split-read follow-on's preview takes the bus.  In a MUXED build that instant
+// is the T1 half (`t1_half2`), because the preview exists ONLY to get the
+// follow-on address onto shared pins early; in a DE-MUXED build there are no
+// shared pins and no half, so the preview is simply the whole clock.  THAT IS
+// THE ONE PLACE THE TWO CONFIGURATIONS DIFFER, and it differs for the reason
+// the mechanism exists.
+//----------------------------------------------------------------------------
+wire bus_t1 = r_run && (r_ts == TS_T1);
 
-// F55: `halt_addr` is now wholly subsumed by the `r_ts == TS_T1` term here and
-// is left named for what it selects in `ad_o` above -- the HALT's T1 publishes
-// `r_cur_addr` and not `t1_addr`, which is unchanged.
-assign ad_oe_addr = (flush_fast || display ||
-                     (r_run && (r_ts == TS_T1)) || halt_addr) &&
+// `bus_half` -- THE T1 HALF, AT THE ONLY INSTANT ANYTHING READS IT.
+//
+// `t1_half2` is loaded at the cycle's `ce_half` with
+// `(r_run && (r_ts == TS_T1)) || vector_follow_preview` -- registers (and one
+// EU wire off registers) that do not move within a CPU clock -- and S-1 says
+// at least one `ce_half` falls between consecutive `ce`s.  SO AT EVERY `ce`,
+// `t1_half2` IS THAT EXPRESSION.  `ce` is the only instant the AD output latch
+// below loads, so a de-muxed build needs no flop to know the phase: it
+// evaluates the same expression.  ASSERTED, NOT ASSUMED -- see the `bus_half`
+// equivalence check beside the `t1_half2` flop.
+`ifdef V30_MUXED_AD
+wire bus_half = t1_half2;
+`else
+wire bus_half = bus_t1 || vector_follow_preview;
+`endif
+
+wire bus_vfp_pub = vector_follow_preview && bus_half;
+
+// `addr_o` -- THE LINEAR ADDRESS OF THE CYCLE THAT OWNS THE BUS.
+// VALID FROM the announcement clock (where it carries the ANNOUNCED cycle's
+// address) THROUGH the whole of that cycle's T1/T2/Tw/T3/T4 (where it carries
+// the RUNNING cycle's).  It is never meaningless: with nothing running it
+// holds the last running cycle's address, which is what the pads show by
+// retention on the real part.  An INTA announces no address (the model's
+// `Access::no_addr`) and it reads ZERO there -- that zero is the part's, not a
+// placeholder.
+assign addr_o = bus_vfp_pub ? eu_addr
+              : flush_fast  ? flush_fast_addr
+              : disp_inta   ? 20'h0
+              : cur_inta    ? 20'h0
+              : display     ? display_addr
+                            : r_cur_addr;      // halt / T1 / the data phase
+
+// `data_o` -- THE WRITE WORD OF THE CYCLE THAT OWNS THE BUS, in bus byte order
+// (swapped on an odd address, above).  MEANINGFUL whenever the owning cycle is
+// a write, from its T1 through T4.  On a read cycle it holds the previous
+// write's word and is DECLARED MEANINGLESS -- the muxed view never publishes
+// it there either, so nothing has ever depended on it.  No flop: `r_cur_data`
+// is a register and the pairing term is the register-only lookahead above.
+assign data_o = cur_data_o;
+
+// `status_o` -- {md8080, psw_ie, seg}, the nibble A19-16 carries whenever it is
+// not carrying an address.  MEANINGFUL for the whole of the owning cycle, and
+// it follows the SAME owner the address does: the ANNOUNCED cycle's segment
+// while a display holds the bus, the RUNNING cycle's otherwise.  (`disp_inta`
+// outranks `cur_inta` outranks `display`, which is the mux's own order.)
+assign status_o = data_ps((disp_inta || (display && !cur_inta)) ? r_cmt_seg
+                                                               : r_cur_seg);
+
+//----------------------------------------------------------------------------
+// THE MULTIPLEXED VIEW, COMPOSED FROM THE THREE PORTS ABOVE.
+//
+// A19-16 carries the ADDRESS's top nibble during the address ONE-SHOT and the
+// STATUS nibble otherwise; A15-0 carries the address low during an address
+// phase and the WRITE DATA otherwise.  That sentence is the whole law and the
+// two wires below are its two clauses -- M23 and F53 on the high lane, the T1
+// turnaround on the low one.  The view owns NO OPERAND OF ITS OWN, so there is
+// no second derivation that can drift from the ports.
+//
+// ⚠ IT IS COMPUTED IN EVERY CONFIGURATION, AND THAT IS A FINDING, NOT AN
+// OVERSIGHT.  See THE AD OUTPUT LATCH below: F58 makes a HALT pseudo-cycle
+// PUBLISH the latch, so the shared-pad drive is machine state with a
+// functional consumer, not presentation.  A de-muxed core is the SAME MACHINE
+// presented differently and must keep it.  What `V30_MUXED_AD` removes is the
+// EXPOSURE -- the `ad_o`/`ad_oe_*` ports and the `AD`/`AD_OE` pins above them.
+//----------------------------------------------------------------------------
+`ifndef V30_MUXED_AD
+wire [19:0] ad_o;                              // internal: the latch's input
+wire        ad_oe_addr, ad_oe_ps, ad_oe_data;  // internal: which lane it loads
+`endif
+
+wire bus_ph_hi = bus_vfp_pub ? 1'b1
+               : flush_fast  ? 1'b1
+               : disp_inta   ? (r_cdage == 3'd0)          // F53, the INTA half
+               : cur_inta    ? !r_cur_late_t1             // F53, a late INTA T1
+               : display     ? (r_cdage == 3'd0)          // F53, the display
+               : halt_addr   ? 1'b1                       // F51/F55
+               : bus_t1      ? ((r_cur_wr && bus_half) || !r_cur_late_t1) // M23
+                             : 1'b0;                      // the data phase
+
+wire bus_ph_lo = (bus_vfp_pub || flush_fast || disp_inta || cur_inta ||
+                  display || halt_addr) ? 1'b1
+               : bus_t1 ? !(r_cur_wr && bus_half)         // the T1 turnaround
+                        : 1'b0;                           // the data phase
+
+assign ad_o = {bus_ph_hi ? addr_o[19:16] : status_o,
+               bus_ph_lo ? addr_o[15:0]  : data_o};
+
+// F55: `halt_addr` is now wholly subsumed by `bus_t1` in the enable below and
+// is left named for what it selects in the composition above -- the HALT's T1
+// publishes the whole address, where an ordinary late T1 shows the status.
+assign ad_oe_addr = (flush_fast || display || bus_t1 || halt_addr) &&
                     !disp_inta && !cur_inta;
 // F55 / F51: a HALT pseudo-cycle has no data phase, so the PS/data drive does
 // not take the pads over when the address one-shot expires.  All three enables
@@ -880,18 +1236,105 @@ assign ad_oe_addr = (flush_fast || display ||
 assign ad_oe_ps   = (!ad_oe_addr && r_run && !r_cur_halt &&
                      (r_ts != TS_T1) && (r_ts != TS_TI)) ||
                     disp_inta || cur_inta;
-assign ad_oe_data = (vector_follow_preview && t1_half2) ||
-                    eu_ghost_preview ||
+assign ad_oe_data = bus_vfp_pub ||
                     (r_run && r_cur_wr && !r_cur_halt && !r_cur_noaddr &&
                      (r_ts != TS_TI) && !display);
 
 assign rd_n = !(r_run && ((r_ts == TS_T2) || (r_ts == TS_T3) || (r_ts == TS_TW)) &&
                 !r_cur_wr && !r_cur_halt);
 
-always @(negedge clk)
+// THE T1 AD HALF.  `negedge` -> `posedge` 2026-08-13: this was the design's
+// LAST negedge-clocked flop, and it is now a plain posedge flop enabled by the
+// same `ce_half`.  An enable is not a term, so the value still HOLDS between
+// `ce_half`s -- the turnaround simply moves from `ce_half`+0.5 fabric periods
+// to `ce_half`+1.0, which is strictly inside the free window C-PIN-1 names.
+// The `ss_we` arm travels with it and keeps its save-state address, its bit
+// and its meaning, so the save-state stream is unchanged.  (Naming that
+// address here would be a THIRD textual reference and `ss_lint` counts them --
+// it caught exactly that on the first draft of this comment.)
+//
+// It was proved instrument-identical on every contract-legal platform and
+// REVERTED once, by a scorer running the core at `--ce-div 1` where the
+// testbench asserted CE and CE_HALF on the same clock -- outside the core's
+// own declared operating contract.  That instrument is fixed
+// (`hdl/tb/ce_contract_check.sv`); this is the re-land.
+// `docs/notes/t1_half2_posedge_prereg_2026-08-13.md` §2/§3 (hold windows,
+// D-cone stability), `docs/notes/ce_contract_reland_prereg_2026-08-13.md`.
+//
+// 2026-08-14: THE FLOP IS MUXED-BUS MACHINERY AND LIVES UNDER `V30_MUXED_AD`
+// WITH THE REST OF IT.  It has zero consumers in the next-state logic, so a
+// de-muxed build simply does not have a turnaround to place -- nor a `ce_half`
+// to place it with, that pin being this flop's only enable.
+`ifdef V30_MUXED_AD
+always @(posedge clk)
     if (ss_we && ss_addr == SSA_B_T1_HALF2) t1_half2 <= ss_wdata[0];
     else if (ce_half) t1_half2 <= (r_run && (r_ts == TS_T1)) ||
                                   vector_follow_preview;
+
+`ifndef SYNTHESIS
+//----------------------------------------------------------------------------
+// THE `bus_half` EQUIVALENCE.  The de-muxed configuration has no `ce_half` and
+// no `t1_half2`; it reads the phase off the registers the flop is loaded from.
+// That is only legitimate AT `ce`, and `ce` is the only instant the AD output
+// latch loads -- so this is the exact clause that has to hold, and it is
+// checked on every CE clock of every simulation leg the tree runs rather than
+// argued from S-1.
+//----------------------------------------------------------------------------
+always @(posedge clk)
+    if (ce && !srst &&
+        (t1_half2 !== ((r_run && (r_ts == TS_T1)) || vector_follow_preview)))
+        $fatal(1, "v30u_biu: bus_half EQUIVALENCE FAILED at %0t -- t1_half2 %b but (bus_t1 || vfp) %b at a CE instant.  The de-muxed configuration derives the T1 half from these registers and would disagree with the multiplexed one; see docs/notes/demux_bus_prereg_2026-08-14.md.",
+               $time, t1_half2,
+               ((r_run && (r_ts == TS_T1)) || vector_follow_preview));
+
+//----------------------------------------------------------------------------
+// THE RECONSTRUCTION FALSIFIER.
+//
+// The composition above replaced a nine-way value mux with two phase bits over
+// three operands.  That is provably the same function -- and "provably" is not
+// a gate.  So the NINE-WAY MUX IS KEPT VERBATIM as a simulation-only reference
+// and compared against the composed pins on EVERY FABRIC CLOCK of every sim
+// leg the tree runs.  A future edit that moves one and not the other stops the
+// run where it happens rather than showing up as a score.
+//
+// WHY THIS FORM AND NOT "reconstruct from the ports and compare to `ad_o`":
+// `ad_o` IS that reconstruction now, so such a check is a tautology.  This one
+// compares the composition against the pin law that 169,000 golden cases,
+// 17,350 lockstep forms and every bitstream to date were scored on.
+//
+// ⚠ ONE STATED HOLE: the compare is skipped while the reference carries an X.
+// Two X-pessimistic expressions over the same registers may differ in X-ness
+// without differing in value, and that is a pre-reset artefact, not a defect.
+//
+// NON-VACUITY: perturb ONE term of the composition and this fires.
+// `docs/notes/demux_bus_prereg_2026-08-14.md` §4.
+//----------------------------------------------------------------------------
+wire [19:0] t1_addr_ref = r_cur_late_t1 ? {data_ps(r_cur_seg), r_cur_addr[15:0]}
+                                        : r_cur_addr;
+wire  [3:0] disp_hi_ref  = (r_cdage == 3'd0) ? display_addr[19:16]
+                                             : data_ps(r_cmt_seg);
+wire  [3:0] dinta_hi_ref = (r_cdage == 3'd0) ? 4'h0
+                                             : data_ps(r_cmt_seg);
+wire  [3:0] cinta_hi_ref = r_cur_late_t1 ? data_ps(r_cur_seg) : 4'h0;
+
+wire [19:0] ad_o_ref = (vector_follow_preview && t1_half2) ? eu_addr
+                     : flush_fast               ? flush_fast_addr
+                     : disp_inta                ? {dinta_hi_ref, 16'h0}
+                     : cur_inta                 ? {cinta_hi_ref, 16'h0}
+                     : display                  ? {disp_hi_ref, display_addr[15:0]}
+                     : halt_addr                ? r_cur_addr
+                     : (r_run && (r_ts == TS_T1))  ? (r_cur_wr && t1_half2
+                                                  ? {r_cur_addr[19:16], cur_data_o}
+                                                  : t1_addr_ref)
+                                               : {data_ps(r_cur_seg), cur_data_o};
+
+always @(posedge clk)
+    if ((^ad_o_ref !== 1'bx) && (ad_o !== ad_o_ref))
+        $fatal(1, "v30u_biu: DE-MUX RECONSTRUCTION FAILED at %0t -- composed AD %05x, muxed law %05x (addr_o %05x data_o %04x status_o %01x hi %b lo %b).  The de-muxed ports and the multiplexed view have DRIFTED; see docs/notes/demux_bus_prereg_2026-08-14.md §4.",
+               $time, ad_o, ad_o_ref, addr_o, data_o, status_o,
+               bus_ph_hi, bus_ph_lo);
+`endif
+`endif
 
 //============================================================================
 // THE CLOCK
@@ -1011,6 +1454,12 @@ reg            rq_wr_rst [0:1];
 reg            rq_need_rst [0:1];
 reg            rq_last_rst [0:1];
 reg            rq_late_rst [0:1];
+reg            rq_ghost_rst [0:1];
+reg            cmt_ghost_rst;
+reg     [19:0] g_sp_rst;
+reg     [19:0] g_bare_rst;
+reg      [1:0] g_age_rst;
+reg            g_row_q_rst;
 
 integer i_rst;        // the reset function's own working values --
 reg [15:0] lfa_p_rst;  // block-local, so the run function keeps its own
@@ -1099,6 +1548,12 @@ always_comb begin
     for (i_rst = 0; i_rst < $size(r_rq_need); i_rst = i_rst + 1) rq_need_rst[i_rst] = r_rq_need[i_rst];
     for (i_rst = 0; i_rst < $size(r_rq_last); i_rst = i_rst + 1) rq_last_rst[i_rst] = r_rq_last[i_rst];
     for (i_rst = 0; i_rst < $size(r_rq_late); i_rst = i_rst + 1) rq_late_rst[i_rst] = r_rq_late[i_rst];
+    for (i_rst = 0; i_rst < $size(r_rq_ghost); i_rst = i_rst + 1) rq_ghost_rst[i_rst] = r_rq_ghost[i_rst];
+    cmt_ghost_rst = r_cmt_ghost;
+    g_sp_rst = r_g_sp;
+    g_bare_rst = r_g_bare;
+    g_age_rst = r_g_age;
+    g_row_q_rst = r_g_row_q;
 
         //--------------------------------------------------------------------
         // RESET == the model's begin_case(), plus the backdoor injection.
@@ -1127,7 +1582,11 @@ always_comb begin
             rq_odd_rst[i_rst]  = 1'b0;
             rq_wr_rst[i_rst]  = 1'b0; rq_need_rst[i_rst]  = 1'b0; rq_last_rst[i_rst]  = 1'b1;
             rq_late_rst[i_rst] = 1'b0;
+            rq_ghost_rst[i_rst] = 1'b0;
         end
+        cmt_ghost_rst = 1'b0;
+        g_sp_rst = 20'd0; g_bare_rst = 20'd0;
+        g_age_rst = 2'd2; g_row_q_rst = 1'b0;
         slot_busy_rst  = 1'b0; slot_accept_rst  = 1'b0;
         opr_held_rst  = 2'd0; done_ctr_rst  = 2'd0; done_wr_rst  = 1'b0;
         rd_first_hi_rst = 8'd0; rd_was_split_rst = 1'b0;
@@ -1262,7 +1721,13 @@ always_comb begin
         rq_need[ri] = r_rq_need[ri];
         rq_last[ri] = r_rq_last[ri];
         rq_late[ri] = r_rq_late[ri];
+        rq_ghost[ri] = r_rq_ghost[ri];
     end
+    cmt_ghost = r_cmt_ghost;
+    g_sp = r_g_sp;
+    g_bare = r_g_bare;
+    g_age = r_g_age;
+    g_row_q = r_g_row_q;
     // the per-edge working temporaries (no latches in always_comb)
     ne_now = 1'b0; kill_l = 1'b0; evi_l = 1'b0;
     hfree_l = 1'b0; pop_l = 1'b0; qse_l = 1'b0; sev_now = 2'd0;
@@ -1386,6 +1851,18 @@ always_comb begin
             SSA_B_OPR_FREE_P:   opr_free_p    = ss_wdata[0];
             SSA_B_RD_VAL:       rd_val        = ss_wdata;
             SSA_B_READY_PREV:   ready_prev    = ss_wdata[0];
+            // the 8F ghost read's LAUNCH decoration (v14)
+            SSA_B_GHOST_SP_LO:   g_sp[15:0]    = ss_wdata;
+            SSA_B_GHOST_SP_HI:   g_sp[19:16]   = ss_wdata[3:0];
+            SSA_B_GHOST_BARE_LO: g_bare[15:0]  = ss_wdata;
+            SSA_B_GHOST_BARE_HI: g_bare[19:16] = ss_wdata[3:0];
+            SSA_B_GHOST_AGE:     g_age         = ss_wdata[1:0];
+            SSA_B_GHOST_TAG: begin
+                rq_ghost[0] = ss_wdata[0];
+                rq_ghost[1] = ss_wdata[1];
+                cmt_ghost   = ss_wdata[2];
+                g_row_q     = ss_wdata[3];
+            end
             default: ;
         endcase
     end else begin   // <- was `else if (srst)` then `else if (ce)`:
@@ -1393,6 +1870,23 @@ always_comb begin
         //====================================================================
         // (a) CAPTURE the clock-c predicates
         //====================================================================
+        // THE GHOST READ'S AGE.  This runs FIRST, before the post and before
+        // the eval, so that a request posted and granted on the SAME clock
+        // (`dGR == 0`) reads the age this line just wrote.  That is the module's
+        // own blocking-assignment discipline, the one `rq_*` already relies on.
+        // The arm is the ROW'S RISING EDGE -- `upc_opc == 8'h8f &&
+        // upc_loc == 4'd4` going current -- which is the law's own anchor and
+        // not a re-derived one.  The counter free-runs afterwards and saturates
+        // at 2; it is harmless when no ghost is outstanding, because only a
+        // TAGGED request reads it.
+        g_row_q = eu_ghost_row;
+        if (eu_ghost_row && !r_g_row_q) begin
+            g_age  = 2'd0;
+            g_sp   = eu_ghost_sp;
+            g_bare = eu_ghost_bare;
+        end else if (g_age != 2'd2) begin
+            g_age = g_age + 2'd1;
+        end
         ne_now     = no_eval;
         kill_l     = ann_kill;
         evi_l      = eval_inst;
@@ -1490,6 +1984,11 @@ always_comb begin
             // next arbitration point as early as the BCD/string controls do.
             rq_late[rq_n[0]]   = run && !cur_fetch && !cur_wr &&
                                   (ts >= TS_T3);
+            // ...and WHETHER THIS IS THE 8F GHOST READ.  Only the request the
+            // EU posts is tagged; the split partner the BIU manufactures below
+            // is not, and keeps its posted address (the residue is named in
+            // `ghost_launch_landing_prereg_2026-08-12.md` §7(b)).
+            rq_ghost[rq_n[0]]  = eu_ghost_acc;
             rq_n            = rq_n + 2'd1;
             if (eu_split) begin
                 rq_bs[1]     = eu_bs;
@@ -1504,6 +2003,7 @@ always_comb begin
                 rq_last[1]   = 1'b1;
                 rq_late[1]   = run && !cur_fetch && !cur_wr &&
                                (ts >= TS_T3);
+                rq_ghost[1]  = 1'b0;
                 rq_n         = 2'd2;
             end
             slot_busy       = 1'b1;
@@ -1582,7 +2082,45 @@ always_comb begin
             if (run && cur_fetch)       cur_pn = 2'd0;
             if (cmt_valid && cmt_fetch) cmt_pn = 2'd0;
             flush_eval = 1'b1;
-            if (!qse_l && !(flush_rep && !flush_pend)) e_pend = 1'b1;
+            // ...AND THE OWED EMPTY READS THE SAME RAIL THE DISPLAY DOES (D1).
+            // The REP withdrawal decides its EMPTY in TWO places: `qs_e_now`
+            // above, which suppresses the display on the flush clock when the
+            // redirect takes the arbitration point that carries it, and HERE,
+            // which decides whether an EMPTY the flush clock could not show is
+            // OWED to the next free clock.  `flush_direct` is the rail that
+            // says the direct point was taken, and it has been NARROWED TWICE
+            // since this line was written -- `flush_nmi_young`, and then
+            // `!flush_int_live` ("the asserted pin withdraws the direct
+            // arbitration point on EITHER tail").  This site never received
+            // either narrowing and still read `!flush_pend` alone, which is 1
+            // on every REP-withdrawal flush clock the golden corpus contains,
+            // so it reduced to plain `flush_rep` and DROPPED the announcement
+            // instead of deferring it.
+            //
+            // It only shows when the flush clock cannot display EMPTY for an
+            // UNRELATED reason -- a CODE fetch owning the queue status port
+            // (`e_from_block` / `qs_port_fetch`) -- because only then does this
+            // latch decide anything.  At w0 that never happens, which is why
+            // 169,000 w0 goldens cannot see it.
+            //
+            // MEASURED, and the partition is exact: over 173,000 golden cases
+            // there are 416 clocks with `q_flush && flush_rep`; on ALL of them
+            // `flush_direct`, `flush_pend`, `flush_fast` and `flush_nmi_young`
+            // are 0 and `flush_int_live` is 1.  The 301 that showed EMPTY on
+            // the flush clock ALL PASS; the 115 that could not ALL FAIL, each
+            // with exactly one bad cell, `qop` exp 'E' got '-'.
+            //   v0.1 (169,000, all 347 forms): 56 flush clocks, 0 blocked
+            //   w0evt 75 / 0 · w1evt 73 / 31 · w2evt 62 / 23
+            //   w3evt 63 / 24 · w1evt-biased 87 / 37   (total / blocked)
+            //
+            // FALSIFIER: a REP withdrawal with `flush_direct` set on a clock
+            // where the display was blocked, and where silicon shows no EMPTY
+            // on any later clock.  `flush_fast` (which adds `flush_idle`) is
+            // the tighter candidate and is DELIBERATELY NOT TAKEN: no golden
+            // clock distinguishes them, so the smaller change is the evidenced
+            // one.  `!flush_pend` is kept for the same reason.
+            if (!qse_l && !(flush_rep && !flush_pend && flush_direct))
+                e_pend = 1'b1;
         end
         //====================================================================
         // (c) END OF CLOCK: advance the running cycle
@@ -1783,6 +2321,15 @@ always_comb begin
                 // M4: an EU access never preempts an in-flight cycle; it wins
                 // the next eval.
                 cmt_bs = rq_bs[0]; cmt_addr = rq_addr[0];
+                // THE LAUNCH DECORATION, AND IT IS THE ONLY THING THAT MOVES.
+                // `rq_addr[0]` IS the `dGR == 1` answer -- the wired AND the EU
+                // posted -- so the mux has three inputs and only two of them
+                // are new registers.  `cmt_ube_n`/`cmt_odd` stay the posted
+                // ones (§7(c) of the pre-registration; every BARE value in the
+                // measured population is even and nothing here tests it).
+                cmt_ghost = rq_ghost[0];
+                if (rq_ghost[0] && (g_age != 2'd1))
+                    cmt_addr = (g_age == 2'd0) ? g_sp : g_bare;
                 cmt_data = rq_data[0]; cmt_ube_n = rq_ube[0];
                 cmt_odd = rq_odd[0];
                 cmt_seg = rq_seg[0]; cmt_noaddr = rq_noaddr[0];
@@ -1796,6 +2343,7 @@ always_comb begin
                 rq_wr[0] = rq_wr[1]; rq_need[0] = rq_need[1];
                 rq_last[0] = rq_last[1];
                 rq_late[0] = rq_late[1];
+                rq_ghost[0] = rq_ghost[1];
                 rq_n = rq_n - 2'd1;
                 // M10: the slot's occupant now has the T1 that frees it -- the
                 // LAST cycle of the access, so a split holds it across both.
@@ -1819,6 +2367,7 @@ always_comb begin
                     // a second BIU-only copy instead leaked the old segment.
                     fetch_lin = {flush_cs, 4'd0} + {4'd0, fetch_ptr};
                     cmt_bs = BS_CODE; cmt_addr = fetch_lin; cmt_data = 16'd0;
+                    cmt_ghost = 1'b0;
                     cmt_ube_n = 1'b0; cmt_seg = 2'd2; cmt_noaddr = 1'b0;
                     cmt_odd = 1'b0;
                     cmt_wr = 1'b0; cmt_need = 1'b0; cmt_rd_last = 1'b1;
@@ -1855,12 +2404,14 @@ always_comb begin
             rq_noaddr[1] = rq_noaddr[0]; rq_wr[1] = rq_wr[0];
             rq_need[1] = rq_need[0]; rq_last[1] = rq_last[0];
             rq_late[1] = rq_late[0];
+            rq_ghost[1] = rq_ghost[0];
             rq_bs[0] = cmt_bs; rq_addr[0] = cmt_addr;
             rq_data[0] = cmt_data; rq_ube[0] = cmt_ube_n;
             rq_odd[0] = cmt_odd; rq_seg[0] = cmt_seg;
             rq_noaddr[0] = cmt_noaddr; rq_wr[0] = cmt_wr;
             rq_need[0] = cmt_need; rq_last[0] = cmt_rd_last;
             rq_late[0] = 1'b0;
+            rq_ghost[0] = cmt_ghost;
             rq_n = rq_n + 2'd1;
             slot_accept = 1'b0;
             cmt_valid = 1'b0;
@@ -1899,6 +2450,7 @@ always_comb begin
                 rq_wr[1] = rq_wr[0]; rq_need[1] = rq_need[0];
                 rq_last[1] = rq_last[0];
                 rq_late[1] = rq_late[0];
+                rq_ghost[1] = rq_ghost[0];
                 rq_bs[0] = cmt_bs; rq_addr[0] = cmt_addr;
                 rq_data[0] = cmt_data; rq_ube[0] = cmt_ube_n;
                 rq_odd[0] = cmt_odd;
@@ -1909,6 +2461,14 @@ always_comb begin
                 // later announcement expiry must not manufacture a second H3
                 // yield from the original post phase.
                 rq_late[0] = 1'b0;
+                // AN UN-GRANTED GHOST IS STILL A GHOST.  Its `rq_addr[0]`
+                // is now the DECORATED value, and that is harmless by
+                // arithmetic: this path fires at `cdage >= 3`, so the
+                // re-launch is at `g_age == 2` and the mux takes `g_bare`
+                // without reading `rq_addr[0]` at all.  Losing the TAG
+                // would not be harmless -- it would launch the decorated
+                // address as if it were the AND.
+                rq_ghost[0] = cmt_ghost;
                 rq_n = rq_n + 2'd1;
                 slot_accept = 1'b0;
             end
@@ -1934,22 +2494,19 @@ always_comb begin
         if (!run && cmt_valid &&
             ((cdage != 3'd0) ||
              (flush_fast && did_grant && cmt_fetch) ||
-             (vector_follow_preview && did_grant && !cmt_fetch) ||
-             (eu_ghost_preview && did_grant && !cmt_fetch))) begin
+             (vector_follow_preview && did_grant && !cmt_fetch))) begin
             run = 1'b1; ts = TS_T1;
             cur_bs = cmt_bs; cur_addr = cmt_addr; cur_data = cmt_data;
             cur_ube_n = cmt_ube_n; cur_seg = cmt_seg; cur_odd = cmt_odd;
             cur_fetch = cmt_fetch; cur_halt = cmt_halt;
             cur_noaddr = cmt_noaddr; cur_wr = cmt_wr; cur_need = cmt_need;
             cur_rd_last = cmt_rd_last; cur_pn = cmt_pn;
-            cur_late_t1 = (flush_fast || vector_follow_preview ||
-                           eu_ghost_preview) ? 1'b0
+            cur_late_t1 = (flush_fast || vector_follow_preview) ? 1'b0
                         : (cdage != 3'd1) || (cmt_noaddr && cmt_odd);
             // The direct redirect has no displayed announcement, but its T1
             // is otherwise an ordinary on-time T1.  Seed the cycle age at the
             // same value so READY/eval/landing cadence remains unchanged.
-            dage  = (flush_fast || vector_follow_preview ||
-                     eu_ghost_preview) ? 3'd1 : cdage;
+            dage  = (flush_fast || vector_follow_preview) ? 3'd1 : cdage;
             evald = 1'b0; sev = 2'd0;
             cmt_valid = 1'b0;
             // M10: the bus has TAKEN the whole request -- the slot is free
@@ -1984,12 +2541,15 @@ always_comb begin
         // pipeline.  A term added to the existing test; nothing new is stored.
         if (halt_pending && !run && !cmt_valid && !set_noeval &&
             !eu_unhalt_disp) begin
-            cmt_bs = BS_HALT;
+            cmt_bs = BS_HALT; cmt_ghost = 1'b0;
             // S9b: the HALT display drives the address latch AS IT STANDS when
             // the cycle takes the register.  M10(T4): the upper nibble is a
             // LIVE PS, not a constant -- the chip carries IE on it.
-            cmt_addr = {data_ps(2'd2), last_fetch_addr};
-            cmt_data = last_fetch_addr;
+            // F58: the latch as it stands, not a value of the HALT's own.
+            // S9b's "AS IT STANDS when the cycle takes the register" was the
+            // right sentence pointed at the wrong register.
+            cmt_addr = {last_ad_hi, last_ad_lo};
+            cmt_data = last_ad_lo;
             cmt_ube_n = 1'b1; cmt_seg = 2'd2; cmt_noaddr = 1'b0; cmt_odd = 1'b0;
             cmt_wr = 1'b0; cmt_need = 1'b0; cmt_rd_last = 1'b1;
             cmt_fetch = 1'b0; cmt_halt = 1'b1; cmt_pn = 2'd0;
@@ -2113,7 +2673,13 @@ always_ff @(posedge clk) if (ss_we || srst || ce) begin
         r_rq_need[rj] <= (srst && !ss_we) ? rq_need_rst[rj] : rq_need[rj];
         r_rq_last[rj] <= (srst && !ss_we) ? rq_last_rst[rj] : rq_last[rj];
         r_rq_late[rj] <= (srst && !ss_we) ? rq_late_rst[rj] : rq_late[rj];
+        r_rq_ghost[rj] <= (srst && !ss_we) ? rq_ghost_rst[rj] : rq_ghost[rj];
     end
+    r_cmt_ghost <= (srst && !ss_we) ? cmt_ghost_rst : cmt_ghost;
+    r_g_sp <= (srst && !ss_we) ? g_sp_rst : g_sp;
+    r_g_bare <= (srst && !ss_we) ? g_bare_rst : g_bare;
+    r_g_age <= (srst && !ss_we) ? g_age_rst : g_age;
+    r_g_row_q <= (srst && !ss_we) ? g_row_q_rst : g_row_q;
 end
 
 `ifndef SYNTHESIS
@@ -2260,7 +2826,24 @@ always @(posedge clk) begin
         SSA_B_OPR_FREE_P:   ss_rdata <= {15'b0, r_opr_free_p};
         SSA_B_RD_VAL:       ss_rdata <= r_rd_val;
         SSA_B_READY_PREV:   ss_rdata <= {15'b0, r_ready_prev};
+`ifdef V30_MUXED_AD
         SSA_B_T1_HALF2:     ss_rdata <= {15'b0, t1_half2};
+`endif
+        // ⚠ WITHOUT `V30_MUXED_AD` THE FLOP DOES NOT EXIST, this address falls
+        // to `default` and reads 0, and a de-muxed build is therefore a
+        // DIFFERENT SAVE-STATE STREAM by construction.  It is not
+        // stream-compatible with the rig's and must not be loaded into one.
+        // `SS_VERSION` is deliberately NOT bumped: the map is unchanged in the
+        // configuration that has the flop, which is the one every gate scores.
+        SSA_B_LAST_AD_HI:   ss_rdata <= {12'b0, last_ad_hi};
+        SSA_B_LAST_AD_LO:   ss_rdata <= last_ad_lo;
+        SSA_B_GHOST_SP_LO:  ss_rdata <= r_g_sp[15:0];
+        SSA_B_GHOST_SP_HI:  ss_rdata <= {12'b0, r_g_sp[19:16]};
+        SSA_B_GHOST_BARE_LO:ss_rdata <= r_g_bare[15:0];
+        SSA_B_GHOST_BARE_HI:ss_rdata <= {12'b0, r_g_bare[19:16]};
+        SSA_B_GHOST_AGE:    ss_rdata <= {14'b0, r_g_age};
+        SSA_B_GHOST_TAG:    ss_rdata <= {12'b0, r_g_row_q, r_cmt_ghost,
+                                         r_rq_ghost[1], r_rq_ghost[0]};
         default:            ss_rdata <= 16'h0000;
     endcase
 end
@@ -2273,6 +2856,77 @@ always @(posedge clk) begin
     // value is what the comparator stack's idle rows carry.
     else if (srst) last_ube <= 1'b0;
     else if (ce)   last_ube <= ube_n;
+end
+
+// THE AD OUTPUT LATCH.
+//
+// ⚠ 2026-08-14, AND IT IS WHY THE MULTIPLEXED VIEW IS COMPUTED IN EVERY
+// CONFIGURATION: this latch has a FUNCTIONAL CONSUMER.  Its two registers feed
+// `cmt_addr`/`cmt_data` of the HALT pseudo-cycle's announcement in step (e),
+// so the shared-pad drive is MACHINE STATE and not presentation, and a core
+// that presented a de-muxed bus while dropping it would be a different machine
+// from the one silicon measured.  `V30_MUXED_AD` therefore removes the PORTS
+// (`ad_o`/`ad_oe_*` here, `AD`/`AD_OE` on the top) and NOT this.  The de-muxed
+// build still computes what the core would drive on the shared pads; it simply
+// does not have any.
+//
+// F58 -- THE HALT PSEUDO-CYCLE ANNOUNCES NOTHING OF ITS OWN.
+//
+// `last_ad_*` is the AD OUTPUT LATCH, split into exactly the two lanes the two
+// output enables already split it into: A19-16 is loaded whenever the core
+// drives A19-16 (`ad_oe_addr || ad_oe_ps`) and AD15-0 whenever it drives
+// AD15-0 (`ad_oe_addr || ad_oe_data`).  It is pad retention on the DRIVE side,
+// the same sentence as `last_ube` above one bus over, and it stores nothing
+// the die does not already have to have.
+//
+// WHAT IT IS FOR.  The HALT display used to publish
+// `{data_ps(2'd2), last_fetch_addr}` -- a value of its own, sourced from the
+// prefetcher.  MEASURED on silicon, 1,189 HALT pseudo-cycles over the 725
+// retained fz2 captures, chip leg only: the HALT publishes the value the AD
+// output latch ALREADY HOLDS, on both lanes, 1,189 of 1,189 with no exception.
+// The two rules agree exactly when the last bus cycle before the HALT was a
+// CODE fetch -- because then the last value the core drove on AD15-0 IS the
+// last fetch address -- and that is 1,164 of the 1,189, which is why the HLT
+// sweeps, whose program is the one byte `F4`, cannot tell them apart and why
+// this stood for the whole ucore campaign.  The 25 sites where the last cycle
+// was a data cycle (MEMW 12, MEMR 9, IOW 4) are exactly the 25 HALT displays
+// of the 24 `B1` seeds in the fuzz-v2 failure ledger, with nothing left over.
+//
+// It is NOT F55, which is landed and is not disturbed here: F55 is about who
+// holds the pads for the BODY of the pseudo-cycle (nobody -- all three enables
+// are low and the pads retain), and this is about the value published in the
+// pseudo-cycle's own ADDRESS PHASE, which the core does drive and silicon does
+// drive with it.
+//
+// Falsifier: a capture whose HALT display or HALT T1 carries a value the core
+// had not itself last driven on that lane -- in particular any HALT whose
+// AD15-0 is the DATA of a preceding READ (which the memory drove, not the
+// core), or whose A19-16 is not the preceding cycle's segment status.
+// Second falsifier, on the RENDERING rather than the law: this latch is read
+// by the display decision from its REGISTERED value, so a HALT display whose
+// immediately preceding clock is the only clock of a WITHDRAWN announcement
+// would publish one announcement too far back.  No such site exists in the
+// 1,189; if one is ever captured, the read has to move, not the law.
+always @(posedge clk) begin
+    if (ss_we && ss_addr == SSA_B_LAST_AD_HI) last_ad_hi <= ss_wdata[3:0];
+    // THE RESET VALUE IS THE PRE-WINDOW WALK'S, NOT ZERO.  A golden whose
+    // capture window OPENS on a HALT has no in-window cycle to have driven the
+    // pads, and S9a's backdoor preload already reconstructs the pre-window
+    // state for exactly this reason (`last_fetch_addr_rst`).  Seeding these two
+    // lanes from it makes the window's first clock carry what the part carried
+    // into it.  The walk models FETCHES, which is the case in which the old
+    // rule and this one agree (prereg sec.1.2), so the seed is the old
+    // behaviour exactly and only the in-window evolution is new.
+    // MEASURED: without this, `check_core --opcodes all` reads 168,858/169,000
+    // -- HLT.INT 150/200, HLT.NMI 155/200, HLT.RES 153/200, every one of the
+    // 142 first diverging at ROW 1 on `bus`, with arch 200/200 throughout.
+    else if (srst) last_ad_hi <= data_ps(2'd2);
+    else if (ce && (ad_oe_addr || ad_oe_ps)) last_ad_hi <= ad_o[19:16];
+end
+always @(posedge clk) begin
+    if (ss_we && ss_addr == SSA_B_LAST_AD_LO) last_ad_lo <= ss_wdata;
+    else if (srst) last_ad_lo <= last_fetch_addr_rst;   // see LAST_AD_HI above
+    else if (ce && (ad_oe_addr || ad_oe_data)) last_ad_lo <= ad_o[15:0];
 end
 
 //----------------------------------------------------------------------------
