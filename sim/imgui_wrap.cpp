@@ -1,3 +1,4 @@
+#include <algorithm>   // std::sort: not pulled in transitively by newer libstdc++
 #include "imgui_wrap.h"
 #include "imgui_impl_sdl2.h"
 #include "imgui_impl_sdlrenderer2.h"

@@ -14,6 +14,14 @@ lint_off -file "*/jt51/*.v"
 // RTL relies on that. Waive rather than touch synthesis sources.
 lint_off -rule PROCASSWIRE
 
+// sprite.sv declares block-local state inside always_ff with a power-on
+// initialiser (`reg [3:0] st = 0;`) and then writes it with `<=`.  Verilator
+// reads the initialiser as a blocking assignment and rejects the mix; it is a
+// one-time static init, not a mixed-schedule write, so the pattern is safe.
+// Waived rather than restructuring working synthesis RTL for the sim's benefit.
+lint_off -rule BLKANDNBLK -file "*/rtl/sprite.sv"
+lint_off -rule BLKANDNBLK -file "*sprite.sv"
+
 // By-design patterns in the core RTL:
 lint_off -rule CASEX          // mcu.sv address decode uses casex intentionally
 lint_off -rule MULTIDRIVEN    // dpramv true dual-port RAM writes from both ports

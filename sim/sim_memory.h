@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <algorithm>
+#include <cstring>   // memcpy: no longer pulled in transitively by newer libstdc++
 
 class MemoryInterface
 {

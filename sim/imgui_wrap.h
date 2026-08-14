@@ -3,6 +3,8 @@
 
 #define IMGUI_DEFINE_MATH_OPERATORS
 
+#include <stdint.h>   // uint32_t: not pulled in transitively by newer libstdc++
+
 #include "imgui.h"
 #include "imgui_internal.h"
 

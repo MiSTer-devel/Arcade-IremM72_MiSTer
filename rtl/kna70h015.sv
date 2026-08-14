@@ -136,7 +136,12 @@ always @(posedge CLK_32M) begin
 end
 
 
-wire [3:0] ic66[256] = '{
+// `logic`, not `wire`: an unpacked-array initialiser on a NET is not legal
+// SystemVerilog (Quartus tolerates it, Verilator 5.032 rejects it outright and
+// the sim/ build fails to elaborate).  These are constant lookup tables that
+// nothing else ever drives, so a variable with a static initialiser is the same
+// ROM to both tools.
+logic [3:0] ic66[256] = '{
     4'hF, 4'hF, 4'hF, 4'hF, 4'hF, 4'hF, 4'hF, 4'hF,
     4'hF, 4'hF, 4'hF, 4'hF,	4'hF, 4'hF, 4'hF, 4'hF,
     4'hF, 4'hF, 4'hF, 4'hF, 4'hF, 4'hF, 4'hF, 4'hF,
@@ -172,7 +177,12 @@ wire [3:0] ic66[256] = '{
     4'hD, 4'hF, 4'hF, 4'hF,	4'hF, 4'hF, 4'hF, 4'hF
 };
 
-wire [3:0] ic75[256] = '{
+// `logic`, not `wire`: an unpacked-array initialiser on a NET is not legal
+// SystemVerilog (Quartus tolerates it, Verilator 5.032 rejects it outright and
+// the sim/ build fails to elaborate).  These are constant lookup tables that
+// nothing else ever drives, so a variable with a static initialiser is the same
+// ROM to both tools.
+logic [3:0] ic75[256] = '{
     4'hF, 4'hF, 4'hF, 4'hF, 4'hF, 4'hF, 4'hF, 4'hF, 4'hF, 4'hF, 4'hF, 4'hF,
     4'hF, 4'hF, 4'hF, 4'hF, 4'hF, 4'hF, 4'hF, 4'hF, 4'hF, 4'hF, 4'hF, 4'hF,
     4'hF, 4'hF, 4'hF, 4'hF, 4'hF, 4'hF, 4'hF, 4'hF, 4'h9, 4'h9, 4'hB, 4'hB,
