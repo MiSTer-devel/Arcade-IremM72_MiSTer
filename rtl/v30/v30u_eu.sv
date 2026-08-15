@@ -1422,13 +1422,35 @@ wire m_modrm_pc_word = (upc_page == 3'd3) &&
                        e_have1 && (e_s1 == 5'd19) && (e_d1 == 5'd4) &&
                        (e_ictl == I_FLUSH);
 wire m_modrm_parent_word = m_modrm_stack_word || m_modrm_pc_word;
+// THE PARENT-WORD INDEX IS A FULL-WIDTH REGISTER-FILE ADDRESS, NAMED.
+//
+// A byte-register code is 3 bits: 0-3 select the LOW byte of gpr[0..3] and 4-7
+// the HIGH byte of the SAME four words.  The PARENT word is therefore always
+// `gpr[code[1:0]]` and `rb16`'s swap is what `code[2]` selects -- the top bit
+// addresses no fifth word, it picks a half.  `gpr` is an 8-entry array, so a
+// bare `[1:0]` subscript reaches four of its eight elements and Quartus says so
+// (10027); the warning is CORRECT about the reach and only wrong about it being
+// a mistake.  These two wires say the reach in the index's own declared width.
+//
+// ⚠ IT HAS TO BE A NAMED NET.  `gpr[{1'b0, m_idx[1:0]}]` written INLINE still
+// warns, and so does `gpr[m_idx & 3'd3]`: Quartus 17.1 runs this check after
+// constant-folding the expression, so a constant-zero MSB buys nothing.  A
+// declared 3-bit net is what the check reads instead.  MEASURED on a standalone
+// `quartus_map` (Cyclone V, 5CSEBA6U23I7) over six index forms -- inline concat
+// WARNS, `& 3'd3` WARNS, named wire CLEAN, named `always @*` reg CLEAN, explicit
+// 4-way mux CLEAN, plain `gpr[m_idx]` CLEAN.  Do not "simplify" these back
+// inline; the warning returns.
+//
+// Pure wiring: same element selected on every input, no mux and no logic added.
+wire [2:0] m_par_idx = {1'b0, m_idx[1:0]};
+wire [2:0] r_par_idx = {1'b0, r_idx[1:0]};
 wire [15:0] m_reg_rd = !m_byte              ? gpr[m_idx]
-                       : m_modrm_parent_word ? gpr[m_idx[1:0]]
-                                             : rb16(m_idx, gpr[m_idx[1:0]]);
+                       : m_modrm_parent_word ? gpr[m_par_idx]
+                                             : rb16(m_idx, gpr[m_par_idx]);
 wire [15:0] m_rd = (m_kind == OK_REG)  ? m_reg_rd
                  : (m_kind == OK_SREG) ? sreg[m_idx[1:0]]
                  : (m_kind == OK_MEM)  ? opr : 16'd0;
-wire [15:0] r_rd = (r_kind == OK_REG)  ? (r_byte ? rb16(r_idx, gpr[r_idx[1:0]])
+wire [15:0] r_rd = (r_kind == OK_REG)  ? (r_byte ? rb16(r_idx, gpr[r_par_idx])
                                                  : gpr[r_idx])
                  : (r_kind == OK_SREG) ? sreg[r_idx[1:0]]
                  : (r_kind == OK_MEM)  ? opr : 16'd0;
@@ -3281,6 +3303,52 @@ always @* begin
     rowb1_n = rowb1;
     poste_n = poste;
     poll_pipe_n = poll_pipe;
+
+    //-- ...and the SCRATCH TEMPORARIES start at zero, for the same reason the
+    //   `_n` mirrors start at the flop: an arm that assigns nothing must not
+    //   LATCH.  These 24 are pure per-evaluation locals -- every one of them is
+    //   written before it is read on every reachable path (the writes dominate
+    //   the reads inside one arm: `stop` at the head of the chain, `ie_now` /
+    //   `brk_now` at the head of block (a), `nloc`/`carry`/`taken`/`bubble` at
+    //   the head of the row body, `pv`/`rm*`/`ea`/`rseg`/`bsw` at the head of
+    //   their decode arm, `v1`/`v2` immediately above the `wd1` include, and
+    //   `tk`/`ti`/`ts`/`te`/`tb` on the swap line that reads them) -- so a
+    //   defined starting value is UNOBSERVABLE and only removes 24 Quartus
+    //   10240 latch inferences.  NONE of them is referenced by
+    //   `v30u_eu_ss_write.svh`, so the `ss_we` arm holding them was never read
+    //   either; the only reads outside this block are the `ifndef SYNTHESIS`
+    //   observer (guarded `!ss_we`, where every one of them IS assigned) and
+    //   the `_unused_eu` sink.
+    //
+    //   ⚠ THIS IS NOT A PLACE TO PARK A DEFAULT THAT MATTERS.  It is placed
+    //   OUTSIDE the `chain` unroll on purpose: a value written at chain
+    //   position k must still be visible at k+1, and it is.  If a future edit
+    //   ever wants one of these to CARRY between evaluations it must become a
+    //   `_n`/register pair, not lose a line from here.
+    stop = 1'b0;
+    chain = 4'd0;
+    v1 = 16'd0;
+    v2 = 16'd0;
+    bsw = 1'b0;
+    pv = 14'd0;
+    nloc = 4'd0;
+    carry = 1'b0;
+    taken = 1'b0;
+    bubble = 1'b0;
+    retire_now = 1'b0;
+    rep_chained = 1'b0;
+    ie_now = 1'b0;
+    brk_now = 1'b0;
+    ea = 16'd0;
+    rseg = 3'd0;
+    rmmod = 2'd0;
+    rmreg = 3'd0;
+    rmrm = 3'd0;
+    tk = 2'd0;
+    ti = 3'd0;
+    ts = 3'd0;
+    te = 16'd0;
+    tb = 1'b0;
 
     if (ss_we) begin
         `include "v30u_eu_ss_write.svh"
