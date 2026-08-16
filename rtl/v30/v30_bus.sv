@@ -103,7 +103,7 @@ wire        RD_N, UBE_N;
 wire [19:0] ADDR_O;
 wire [15:0] DATA_O;
 wire  [3:0] STATUS_O;
-reg  [15:0] rdata_q;
+wire [15:0] core_din;   // read data into the core (assigned below, NOT a flop)
 
 `ifdef V30_BACKDOOR
 wire [223:0] core_dbg_regs;
@@ -138,7 +138,7 @@ v30_core u_core (
     .INT        (int_req),
     .NMI        (1'b0),
     .POLL_N     (1'b1),
-    .DATA_I     (rdata_q),
+    .DATA_I     (core_din),
     .ADDR_O     (ADDR_O),
     .DATA_O     (DATA_O),
     .STATUS_O   (STATUS_O),
@@ -309,12 +309,42 @@ always_ff @(posedge clk) begin
     end
 end
 
-// Read data into the core's DATA_I.  Registered exactly as it was when it was
-// driven onto AD, so the value the core samples at T3/T4 is unchanged; with no
-// shared pad there is no drive enable and it is simply always presented.
+//----------------------------------------------------------------------------
+// READ DATA INTO THE CORE, AND IT MUST NOT BE REGISTERED HERE.
+//
+// The core captures the read word into `r_cur_data` at the `ce` that leaves
+// T2.  m72.v's read path already costs TWO clocks from the T1 address latch:
+//
+//   addr_lat (T1 ce) -> block-RAM q_a (+1 clk) -> the `d16` source mux, which
+//   is qualified by `<region>_dout_valid_lat` (registered from the read
+//   strobe, so it lands on the same clock) -> `cpu_din` VALID at +1.
+//
+// A flop here would make it +2 -- and the CE train does not always give two
+// clocks.  At the steady 8MHz rate a T-state is 4 fabric clocks and there is
+// margin to spare, but after an SDRAM stall m72.v's catch-up burst issues
+// `ce_cpu` every SECOND fabric clock, so the T2-leaving `ce` falls only TWO
+// clocks after the address latch and a registered copy is still holding the
+// PREVIOUS cycle's word.
+//
+// MEASURED ON HARDWARE (SignalTap, R-Type POST, 2026-08-16).  Two consecutive
+// `scasw` reads of work RAM, same loop, same code:
+//
+//   steady rate   A=40004  cpu_din=0002  ->  r_cur_data = 0002   correct
+//   catch-up burst A=40006 cpu_din=0003  ->  r_cur_data = 2E75   STALE
+//
+// 0x2E75 is the preceding CODE FETCH's word (the `jne` at 0x3F9AA).  The POST
+// compared AX=3 against it, took the branch and printed "RAM NG 2".  Which
+// test trips varies per boot because it depends on where the SDRAM stalls fall
+// -- and the simulator never sees it because its SDRAM model's stall pattern
+// puts the bursts somewhere else.
+//
+// Feeding `cpu_din` straight through costs the core one mux level on top of
+// data that is already a register output (block-RAM q, or `cpu_ram_rom_data`
+// for the ROM path, where the CPU is frozen until the word is registered
+// anyway), and buys back the clock the burst rate does not have.
 // INTA cycles present the vector number in the low byte.
-always_ff @(posedge clk)
-    rdata_q <= (lat_type == BS_INTA) ? {8'h00, int_vector} : cpu_din;
+//----------------------------------------------------------------------------
+assign core_din = (lat_type == BS_INTA) ? {8'h00, int_vector} : cpu_din;
 
 //----------------------------------------------------------------------------
 // Outputs
