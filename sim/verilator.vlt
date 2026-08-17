@@ -19,6 +19,9 @@ lint_off -rule PROCASSWIRE
 // reads the initialiser as a blocking assignment and rejects the mix; it is a
 // one-time static init, not a mixed-schedule write, so the pattern is safe.
 // Waived rather than restructuring working synthesis RTL for the sim's benefit.
+// NB: Verilator (as of 5.020) emits this as a hard %Error, not a waivable
+// lint warning, so `lint_off` here has no effect - the actual suppression is
+// the -Wno-BLKANDNBLK flag in the sim Makefile. Left in place as documentation.
 lint_off -rule BLKANDNBLK -file "*/rtl/sprite.sv"
 lint_off -rule BLKANDNBLK -file "*sprite.sv"
 

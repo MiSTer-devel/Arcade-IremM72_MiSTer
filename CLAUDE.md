@@ -20,8 +20,6 @@ no CLI test/lint harness — "building" means synthesizing a `.rbf` bitstream.
 - `Arcade-IremM72-Fast.qsf` — alternate revision with faster/aggressive fitter settings.
 - `files.qip` lists all RTL source files fed to synthesis. **When you add an RTL file you
   must register it in `files.qip`** (or `pll.qip` / a sub-`.qip`), or Quartus won't compile it.
-- `M72_DEBUG` Verilog macro (commented out in the `.qsf`) enables the DDR trace/debug path
-  (`ddr_debug.sv`) and CPU stall control. It uses DDR and disables `screen_rotate`.
 - Built bitstreams are archived in `releases/`.
 
 `sys/` is the vendored MiSTer framework (HPS I/O, video mixer, PLL reconfig, scaler) — treat
@@ -93,8 +91,6 @@ the relevant `.mra`.
   `make trace` (run under `irem_emu`), `make mister` (deploy to a MiSTer dev box),
   `make picorom` (flash a PicoROM cart). `split_rom.py`/`interleave.py` in `util/` split the
   built binary into the individual ROM chips the MRA expects.
-- **`util/m72_trace_viewer/`** — ImGui (Visual Studio `.sln`) app that visualizes the DDR
-  execution traces captured when the core is built with `M72_DEBUG`. `ddrdbg.py` pulls traces.
 
 ## Conventions
 

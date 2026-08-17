@@ -187,7 +187,6 @@ assign ddr_host.busy = ddr_busy;
 // Core
 ///////////////////////////////////////////////////////////////////////
 
-ddr_debug_data_t ddr_debug_data;
 wire [223:0] dbg_v30_regs;
 wire         dbg_sdr_cpu_code_w;
 
@@ -267,7 +266,6 @@ m72 #(.SS_VERSION(`SIM_SS_VERSION)) m72_inst(
     .ss_do_restore(ss_do_restore),
     .ss_state_out(ss_state_out),
 
-    .ddr_debug_data(ddr_debug_data),
     .dbg_v30_regs(dbg_v30_regs),
     .sdr_cpu_code(dbg_sdr_cpu_code_w),
 

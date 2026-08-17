@@ -21,7 +21,8 @@ VERILATOR_ARGS = --cc --make gmake --no-timing --trace-fst --vpi --Mdir $(VERILA
 				-Wno-TIMESCALEMOD \
 				-Wno-STMTDLY \
 				-Wno-WIDTHEXPAND -Wno-WIDTHTRUNC \
-				-Wno-CASEINCOMPLETE -Wno-UNUSEDSIGNAL
+				-Wno-CASEINCOMPLETE -Wno-UNUSEDSIGNAL \
+				-Wno-BLKANDNBLK
 
 PYTHON = python3
 
@@ -83,8 +84,7 @@ LDLIBS=$(shell pkg-config --libs sdl2) $(CAPSTONE_LIBS)
 # rtl/nu8051/*.sv), no netlist needed. No generated netlists remain.
 NETLISTS =
 
-# ddr_debug.sv first: it declares the file-scope ddr_debug_data_t typedef
-HDL_SRC  = ../rtl/ddr_debug.sv ../rtl/m72_pkg.sv
+HDL_SRC  = ../rtl/m72_pkg.sv
 # Savestate infrastructure: ssbus_if/ddr_if interfaces + streamer + primitives
 HDL_SRC += ../rtl/savestates.sv ../rtl/ddram.sv ../rtl/memory_stream.sv ../rtl/ram.sv
 # V30 ucore (package first) + microcode ROM + bus adapter

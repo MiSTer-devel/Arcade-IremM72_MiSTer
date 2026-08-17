@@ -87,8 +87,6 @@ screen-rotation framebuffer through `ddr_mux`.
   will not restore correctly.
 - **FPGA hardware untested.** The OSD wiring is in place but has not been
   validated on a DE10-Nano yet.
-- **`M72_DEBUG` builds have no savestates** — the DDR pins belong to
-  `ddr_debug` (96MHz domain) there.
 - Audio filter (IIR) state, sprite line buffers and the pause-replay scroll
   table are transient and intentionally not saved (they regenerate within a
   frame; the scroll replay is gated during restore).

@@ -106,8 +106,6 @@ module m72 #(
 
     input video_timing_t video_timing,
 
-    output ddr_debug_data_t ddr_debug_data,
-
     // Full V30 register file for the sim CPU window (zeros unless V30_BACKDOOR).
     output [223:0] dbg_v30_regs,
     // code_fetch flag latched with the last CPU SDRAM request (sim DebugLink).
@@ -679,12 +677,6 @@ v30_bus #(.SS_IDX(SSIDX_V30)) v30(
     .dbg_regs(dbg_v30_regs)
 );
 
-// DDR trace CPU taps are pruned with the VHDL export unit. TODO: reconstruct
-// cs/ip/opcode from dbg_v30_regs if the on-FPGA DDR tracer is ever revived.
-assign ddr_debug_data.cpu_cs = 16'd0;
-assign ddr_debug_data.cpu_ip = 16'd0;
-assign ddr_debug_data.cpu_opcode = 8'd0;
-
 // The write address is valid before MWR reaches T3.  Include the pending
 // memory-write phase in the memory/IO address selection so the PAL can decode
 // a wait-generating tile/sprite target in time for the ucore's READY sample;
@@ -1066,8 +1058,6 @@ mcu #(.SS_IDX(SSIDX_MCU_CPU), .SS_IDX_EMU(SSIDX_MCU_EMU)) mcu(
     .bram_offsets_cs(bram_cs[2]),
     .bram_protect_cs(bram_cs[3]),
 
-    .dbg_rom_addr(mcu_dbg_rom_addr),
-
     .ssbus(ssb[SSIDX_MCU_CPU]),
     .ssbus_emu(ssb[SSIDX_MCU_EMU])
 );
@@ -1159,83 +1149,5 @@ always @(posedge CLK_32M) begin
     else
         audio_out <= {ym_audio[15], ym_audio[15:0]} + {{signed_mcu_sample[7], signed_mcu_sample[7:0], 8'd0}};
 end
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-reg [11:0] dbg_cpu_ext_addr;
-reg [15:0] dbg_cpu_ext_data;
-reg [1:0]  dbg_cpu_ext_we;
-
-assign ddr_debug_data.cpu_ext_addr = dbg_cpu_ext_addr;
-assign ddr_debug_data.cpu_ext_data = dbg_cpu_ext_data;
-assign ddr_debug_data.cpu_ext_we = dbg_cpu_ext_we;
-
-// CPU debug
-always @(posedge CLK_32M) begin
-    reg cs;
-    reg [11:0] addr;
-    reg [15:0] data;
-    reg [1:0] we;
-
-    cs <= (cpu_mem_addr[19:16] == 4'hb) && ( MWR || MRD );
-    addr <= cpu_mem_addr[11:0];
-    data <= cpu_dout;
-    we <= MWR ? cpu_be : 2'b00;
-
-    if (cs & ~((cpu_mem_addr[19:16] == 4'hb) && ( MWR || MRD ))) begin
-        dbg_cpu_ext_addr <= addr;
-        dbg_cpu_ext_we <= we;
-        if (we != 2'b00) dbg_cpu_ext_data <= data;
-        else dbg_cpu_ext_data <= cpu_shared_ram_dout;
-    end
-end
-
-reg [11:0] dbg_mcu_ext_addr;
-reg [7:0] dbg_mcu_ext_data;
-reg dbg_mcu_ext_we;
-
-assign ddr_debug_data.mcu_ext_addr = dbg_mcu_ext_addr;
-assign ddr_debug_data.mcu_ext_data = dbg_mcu_ext_data;
-assign ddr_debug_data.mcu_ext_we = dbg_mcu_ext_we;
-
-// MCU debug
-always @(posedge CLK_32M) begin
-    reg cs;
-    reg [11:0] addr;
-    reg [7:0] data;
-    reg we;
-
-    cs <= mcu_ram_cs;
-    addr <= mcu_ram_addr;
-    data <= mcu_ram_dout;
-    we <= mcu_ram_we;
-
-    if (cs & ~mcu_ram_cs) begin
-        dbg_mcu_ext_addr <= addr;
-        dbg_mcu_ext_we <= we;
-        if (we) dbg_mcu_ext_data <= data;
-        else dbg_mcu_ext_data <= mcu_ram_din;
-    end
-end
-
-
-wire [15:0] mcu_dbg_rom_addr;
-reg [15:0] latched_mcu_dbg_rom_addr;
-assign ddr_debug_data.mcu_rom_addr = latched_mcu_dbg_rom_addr; 
-always @(posedge CLK_32M) if (ce_cpu) latched_mcu_dbg_rom_addr <= mcu_dbg_rom_addr;
 
 endmodule

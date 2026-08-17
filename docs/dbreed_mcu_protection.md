@@ -191,7 +191,7 @@ Key signal names (all under `TOP.sim_top.m72_inst.`):
 - Mailbox: `mcu_shared_ram.int_r_rq / .int_r_ack / .int_l_rq / .int_l_ack`,
   `.cs_r .we_r .addr_r .dout_r .din_r` (MCU/right port),
   `.cs_l .we_l .addr_l .din_l` (V30/left port).
-- MCU PC: `mcu_dbg_rom_addr`.   MCU INT0: `mcu.nu8051.INT0_N`.
+- MCU PC: `mcu.rom_addr`.   MCU INT0: `mcu.nu8051.INT0_N`.
 - V30 bus address: `v30.cpu_addr`.
 
 Typical analyses used during the investigation (rebuild as needed):

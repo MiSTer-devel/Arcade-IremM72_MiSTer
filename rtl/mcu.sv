@@ -144,8 +144,6 @@ module mcu #(
     input             bram_offsets_cs,
     input             bram_protect_cs,
 
-    output     [15:0] dbg_rom_addr,
-
     // savestate: MCU_CPU slave (nu8051 core linear window + wrapper glue) and
     // the MCU_EMU slave forwarded straight through to the mcu_emulator below.
     ssbus_if.slave    ssbus,
@@ -363,19 +361,15 @@ module mcu #(
     // ------------------------------------------------------------------
     reg   [1:0] sample_addr_wr_r    = 2'b00;
     reg         sample_inc_r        = 1'b0;
-    reg  [15:0] dbg_rom_addr_r      = 16'd0;
 
     wire [15:0] mcu_sample_addr    = ss_glue_sample_addr;
     wire  [1:0] mcu_sample_addr_wr = sample_addr_wr_r;
     wire        mcu_sample_inc     = sample_inc_r;
-    assign dbg_rom_addr   = dbg_rom_addr_r;
 
     always @(posedge CLK_32M) begin
         // one-shots: default low, raised for exactly one cycle below
         sample_addr_wr_r <= 2'b00;
         sample_inc_r     <= 1'b0;
-
-        if (ce_8m) dbg_rom_addr_r <= {3'b000, rom_addr};
 
         // The Z80 and the V30 do not share the MCU's clock enable, so the
         // board side runs on the raw clock.

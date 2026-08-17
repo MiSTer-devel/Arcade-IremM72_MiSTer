@@ -566,19 +566,13 @@ m72 #(.SS_VERSION(SS_VERSION)) m72(
     .bram_cs(bram_cs),
     .bram_wr(bram_wr),
 
-`ifdef M72_DEBUG
-    .pause_rq(system_pause | debug_stall | reconfig_pause),
-`else
     .pause_rq(system_pause | reconfig_pause),
-`endif
 
     .ddr(ddr_ss),
     .ss_index(ss_slot),
     .ss_do_save(ss_save),
     .ss_do_restore(ss_load),
     .ss_state_out(),
-
-    .ddr_debug_data(ddr_debug_data),
 
     // sim-only debug taps (pruned to zero without V30_BACKDOOR)
     .dbg_v30_regs(),
@@ -676,8 +670,7 @@ pause pause(
 ///////////////////      SAVESTATES        //////////////////
 //
 // DDR fabric: savestates (highest priority via acquire) muxed with the
-// screen rotation framebuffer.  Debug builds keep ddr_debug (96MHz domain)
-// exclusive on the DDRAM pins, so savestates are non-functional there.
+// screen rotation framebuffer.
 
 ddr_if ddr_ss();
 
@@ -708,8 +701,6 @@ savestate_ui #(.INFO_TIMEOUT_BITS(25)) savestate_ui
     .statusUpdate   (ss_status_set),
     .selected_slot  (ss_slot)
 );
-
-`ifndef M72_DEBUG // debug uses DDR
 
 ddr_if ddr_host(), ddr_rotate();
 
@@ -770,22 +761,6 @@ screen_rotate screen_rotate(
 
 assign ddr_rotate.addr = {rot_ddram_addr, 3'b000};
 assign ddr_rotate.acquire = 0;
-
-`endif
-
-
-ddr_debug_data_t ddr_debug_data;
-
-`ifdef M72_DEBUG
-wire debug_stall;
-ddr_debug ddr_debug(
-    .*,
-    .data(ddr_debug_data),
-    .clk(CLK_96M),
-    .reset(reset),
-    .stall(debug_stall)
-);
-`endif
 
 //HISCORE
 

@@ -273,12 +273,28 @@ always_ff @(posedge clk) begin
                 is_read_cycle  <= read_type;
                 is_write_cycle <= write_type;
                 addr_ann       <= ADDR_O;
+                // THE TWO INTA CYCLES ARE PAIRED BY COUNT, NOT BY ADJACENCY.
+                // `inta_prev` used to be cleared by any non-INTA T1, which
+                // assumed nothing ever runs between INTA1 and INTA2 -- only
+                // idle T-states.  That assumption does not hold: MEASURED on
+                // Ninja Spirit (`traces/glitch2.fst`, HINT interrupt at
+                // t=325082527), the BIU slips one bus cycle in between, that
+                // cycle's T1 took the `else` arm and cleared `inta_prev`, and
+                // INTA2 then re-armed as if it were a FIRST INTA.  With
+                // `inta_second` never set, `int_ack` never asserted, so the
+                // PIC never dropped INT; the V30 samples INT as a LEVEL, so
+                // after the handler's IRET restored IF it took the SAME
+                // request a second time and ran the raster-split ISR twice
+                // (2 of 15 requests in that trace; 17 entries for 15 acks).
+                // Toggling pairs them by count and is immune to whatever the
+                // BIU interleaves.
                 if (bs_q == BS_INTA) begin
                     inta_second <= inta_prev;
-                    inta_prev   <= 1'b1;
+                    inta_prev   <= ~inta_prev;
                 end else begin
                     inta_second <= 1'b0;
-                    inta_prev   <= 1'b0;
+                    // inta_prev deliberately NOT cleared: an intervening
+                    // non-INTA cycle must not break the pairing.
                 end
             end
 

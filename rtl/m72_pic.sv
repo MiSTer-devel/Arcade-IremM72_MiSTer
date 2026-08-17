@@ -71,6 +71,7 @@ always_ff @(posedge clk or posedge reset) begin
         init_state <= UNINIT;
         int_req <= 0;
         intp_latch <= 0;
+        IRR <= 0;
     end else if (ssbus.access(SS_IDX) & ssbus.write) begin
         // Savestate restore writes (the ce-gated body below is frozen)
         case (ssbus.addr[3:0])
@@ -132,29 +133,50 @@ always_ff @(posedge clk or posedge reset) begin
         if (init_state == INIT_DONE) begin
             intp_latch <= intp;
 
+            // IRR is a real, always-live request-pending register: the
+            // datasheet has it latch every qualifying request independent of
+            // whether a prior interrupt is still awaiting acknowledgment
+            // ("IRR bit is not latched until the CPU returns an INTAK
+            // pulse... to send the next interrupt request, temporarily lower
+            // the INTP input, then raise it" - i.e. edges are captured any
+            // time, not just while idle). Self-FI mode (the only mode this
+            // core's games use, confirmed by disassembly - no game issues an
+            // FI/EOI write) provides no in-service blocking at all per the
+            // datasheet, so IRR is the only thing standing between a real
+            // edge and a lost one; gating this update on `~int_req` (as the
+            // previous version effectively did, by skipping the whole scan
+            // while busy) silently drops any edge that arrives before the
+            // pending request is acknowledged.
+            for (int p = 0; p < 8; p = p + 1) begin
+                if (edge_triggered) begin
+                    if (intp[p] & ~intp_latch[p]) IRR[p] <= 1;
+                end else begin
+                    IRR[p] <= intp[p];
+                end
+            end
+
             if (int_req) begin
                 if (int_ack) begin
                     int_req <= 0;
+                    // Accepted: this request is resolved (datasheet: "sets
+                    // bit n of ISR; resets bit n of IRR" at INTAK-complete).
+                    IRR[int_vector[2:0]] <= 0;
                 end
             end else begin
-                bit [7:0] trig;
+                // Priority scan over the live IRR, lowest index = highest
+                // priority. Only stop on an actually-servable (pending and
+                // unmasked) bit - a masked or not-yet-pending lower-priority
+                // bit must not block a higher-numbered one from being seen.
                 int p;
                 bit t;
 
-                if (edge_triggered)
-                    trig = intp & ~intp_latch;
-                else
-                    trig = intp;
-                
                 t = 0;
                 for( p = 0; p < 8 && !t; p = p + 1 ) begin
-                    if (intp[p]) begin
-                        if (trig[p] & ~IMW[p]) begin
-                            int_req <= 1;
-                            // Full 8-bit vector NUMBER (was a byte offset that
-                            // dropped IW2[7] and appended 2'b00 for the VHDL core).
-                            int_vector <= {IW2[7:3], p[2:0]};
-                        end
+                    if (IRR[p] & ~IMW[p]) begin
+                        int_req <= 1;
+                        // Full 8-bit vector NUMBER (was a byte offset that
+                        // dropped IW2[7] and appended 2'b00 for the VHDL core).
+                        int_vector <= {IW2[7:3], p[2:0]};
                         t = 1;
                     end
                 end
