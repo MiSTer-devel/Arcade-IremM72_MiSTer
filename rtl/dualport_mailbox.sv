@@ -83,12 +83,23 @@ always @(posedge clk_l or posedge reset) begin
     end else begin
         if (cs_l) begin
             // The 16-bit left port is a pair of MB8421s; the MCU-side interrupt
-            // comes from the high-byte (odd address) device only: byte 0xfff is
-            // the command byte (the dbreed i8751 polls it for changes), and the
-            // CPU writes 0xffe before 0xfff, so ringing on the 0xfff write makes
-            // command + interrupt atomic.  Ringing on either lane double-triggers
-            // the MCU when the CPU's byte writes straddle the MCU's acknowledge.
-            if (we_l[1] && addr_l[11:1] == 'h7ff) int_r_rq <= ~int_r_ack;
+            // comes from the LOW-byte (even address) device - byte 0xffe.  That
+            // is the lane the main CPU's periodic doorbell lands on: its heartbeat
+            // is `inc byte ptr [0xffe]`, an 8-bit access that asserts we_l[0]
+            // only.  The i8751 firmware treats that interrupt as a watchdog kick
+            // (its timer-0 ISR clears the retry counter at IRAM 0x44 when the
+            // doorbell arrived and increments it when it did not); once the
+            // counter reaches 30 the MCU takes its fatal-halt path at ROM 0x316
+            // - timers off, interrupts off, spinning on AJMP 0x31d - and never
+            // serves another sample or protection command.  Qualifying on the
+            // high lane instead made every byte-wide heartbeat silent, which is
+            // exactly that starvation.
+            //
+            // Ringing on the low lane still keeps command + interrupt atomic for
+            // the split-byte-write case the high-lane rule was reaching for: the
+            // CPU writes 0xffe before 0xfff, so only the first of the pair rings
+            // and the MCU cannot be re-triggered by the second half.
+            if (we_l[0] && addr_l[11:1] == 'h7ff) int_r_rq <= ~int_r_ack;
             if (we_l == 2'b00 && addr_l[11:1] == 'h7fe) int_l_ack <= int_l_rq;
         end
         // Savestate restore of the two clk_l-owned handshake bits (frozen under
