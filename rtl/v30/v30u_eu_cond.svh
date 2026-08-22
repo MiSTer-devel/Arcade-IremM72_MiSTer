@@ -37,33 +37,39 @@ case (r_cond)
                   rep_chained = rep_chain_n;
                   rep_chain_n = 1'b1;
                   if (count_n == 16'd0) taken = 1'b0;      // F19
-                  // "REP iterations are individually interruptible": the sample
-                  // is `edge - 4` (interrupt_model.md, "REP abort") and the
-                  // EDGE is one clock past this row on the FIRST boundary and
-                  // two on a chained one (see `irq_rep_1st`/`irq_rep_chn`); the
-                  // recognition is LATCHED -- the withdrawal path's own
-                  // `0223 JMP INTR` is what reads it back.
-                  else if ((rep_kind_n != REP_NONE) &&
-                           (intr_pending_n ||
-                            (rep_chained ? irq_rep_chn : irq_rep_1st))) begin
-                      intr_pending_n = 1'b1;
-                      taken = 1'b0;
-                      // ...and the chained boundary's decision edge being one
-                      // clock later moves the WHOLE withdrawal with it: the
-                      // model's `if (rep_elems_ >= 2) biu_.charge(1)`, which is
-                      // what puts the flush at accept+9 instead of edge+9.
-                      if (rep_chained) bubble = 1'b1;
-                  end
                   else begin
                       if (rep_test_n == TEST_Z)
                           taken = (psw_n[FZ] == rep_pol_n);
                       else if (rep_test_n == TEST_CY)
                           taken = (psw_n[FCY] == rep_pol_n);
                       else taken = 1'b1;
+                      // The completed iteration's termination result wins over
+                      // withdrawal.  A pending INT/TF is serviced at the next
+                      // instruction boundary when no further element would
+                      // run; TEST_NONE remains unconditionally continuing and
+                      // therefore takes the same withdrawal path as before.
+                      //
+                      // "REP iterations are individually interruptible": the
+                      // sample is `edge - 4` (interrupt_model.md, "REP abort")
+                      // and the EDGE is one clock past this row on the FIRST
+                      // boundary and two on a chained one (see `irq_rep_1st` /
+                      // `irq_rep_chn`); recognition is LATCHED -- the
+                      // withdrawal path's `0223 JMP INTR` reads it back.
+                      if (taken && (rep_kind_n != REP_NONE) &&
+                          (intr_pending_n ||
+                           (rep_chained ? irq_rep_chn : irq_rep_1st))) begin
+                          intr_pending_n = 1'b1;
+                          taken = 1'b0;
+                          // The chained boundary's later decision edge moves
+                          // the whole withdrawal with it, putting the flush at
+                          // accept+9 rather than edge+9.
+                          if (rep_chained) bubble = 1'b1;
+                      end
                       // A terminating REP condition retires normally.  TF
                       // only takes the withdrawal path when another element
                       // would otherwise run.
-                      if (taken && brk_take && (rep_kind_n != REP_NONE)) begin
+                      else if (taken && brk_take &&
+                               (rep_kind_n != REP_NONE)) begin
                           intr_pending_n = 1'b1;
                           taken = 1'b0;
                           bubble = 1'b1;
