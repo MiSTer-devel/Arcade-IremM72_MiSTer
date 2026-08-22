@@ -17,7 +17,13 @@ begin
         v1  = (e_s1 == 5'd7) ? {8'd0, rowb0_n}
             : (e_s1 == 5'd6) ? opr_n
             : s1_val;
-        bsw = (e_s1 == 5'd7) || (e_s1 == 5'd23);
+        // ...and the WIDTH TAG follows the SAME three arms, for the same
+        // reason: `opr_n` is the word the `F` delivery just put there, so its
+        // tag has to be the one that came out of the store with it.
+        wb1 = (e_s1 == 5'd7) ? 1'b1
+            : (e_s1 == 5'd6) ? opr_byte_n
+            : s1_wbyte;
+        bsw = s1_byte;
         if (e_s1 == 5'd6) opr_fresh_n = 1'b0;      // reading OPR CONSUMES it
         if (e_s1 == 5'd20) begin
             if (sig_mask != 16'd0)
@@ -32,15 +38,16 @@ begin
         end
     end
     if (e_have2 && !e_is_rloop) begin
-        v2 = (e_s2 == 4'd5) ? {8'd0, rowb1_n} : s2_val;
+        v2  = (e_s2 == 4'd5) ? {8'd0, rowb1_n} : s2_val;
+        wb2 = (e_s2 == 4'd5) ? 1'b1           : s2_wbyte;
         if (e_s2 == 4'd4) begin
             if (sig_mask != 16'd0)
                 stat_n = (stat_n & ~sig_mask) | (sig_flags & sig_mask);
         end
         if (!((e_s2 == 4'd4) && !sig_commits)) begin
             case (e_d2)
-                2'd0: tmpa_n = v2;
-                2'd1: tmpb_n = v2;
+                2'd0: begin tmpa_n = v2; tmpa_byte_n = wb2; end
+                2'd1: begin tmpb_n = v2; tmpb_byte_n = wb2; end
                 2'd2: ind_n  = v2;
                 default: ;
             endcase
@@ -65,7 +72,12 @@ begin
         al_spent_n   = 1'b0;
         al_op_n      = r_aluop;
         al_tmp_n     = r_alutmp;
-        al_byte_n    = op8_n;
+        // `al_byte_n = op8_n` STOOD HERE AND IS THE DEFECT.  Nothing latches
+        // the width now: `al_width_byte` reads the tag of the register the
+        // ALU's port takes its operand from, AT THE INSTANT THE CONSUMING ROW
+        // EVALUATES -- which it has to be, because `80/81/83` latch `ALU OPC
+        // tmpa` here at 003E and only load port A with the r/m operand at
+        // 003F, one row later.
         al_eaconst_n = 1'b0;
         // An armed ADJD/ADJA the next latched op does NOT consume DISCHARGES:
         // the adjust unit writes its plain truncation back (030B, EXT).
@@ -139,6 +151,8 @@ begin
                 if (rd_done_cnt_n != 2'd0) rd_done_cnt_n = rd_done_cnt_n - 2'd1;
                 if (rdq_n_n != 2'd0) begin
                     opr_n = rdq0_n; rdq0_n = rdq1_n; rdq_n_n = rdq_n_n - 2'd1;
+                    // ...and the width tag pops out of the same slot
+                    opr_byte_n = rdq0_byte_n; rdq0_byte_n = rdq1_byte_n;
                     opr_loaded_n = 1'b1;                      // §87.A
                 end
             end
@@ -163,6 +177,15 @@ begin
                                                          : wr_out_n + 2'd2;
                 else if (wr_out_n != 2'd3) wr_out_n = wr_out_n + 2'd1;
             end else begin
+                // ...AND THE POSTED READ'S WIDTH GOES INTO THE RECORD WITH
+                // IT, oldest first, because the completion that brings the
+                // word back carries no tag of its own.  An INTA acknowledge
+                // delivers ONE byte on the low lane (`bus_inta`), whatever
+                // the row's operand width says.
+                if (rd_pending_n == 2'd0)
+                    rdp0_byte_n = row_is_inta ? 1'b1 : acc_byte;
+                else if (rd_pending_n == 2'd1)
+                    rdp1_byte_n = row_is_inta ? 1'b1 : acc_byte;
                 if (rd_pending_n != 2'd3) rd_pending_n = rd_pending_n + 2'd1;
                 // The 8F ghost read ARMS the discard here, on the clock its
                 // own row posts.  The guard is the regime the mechanism is

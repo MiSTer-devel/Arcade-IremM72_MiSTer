@@ -14,7 +14,10 @@
 //============================================================================
 begin
     if (e_have1) begin
-        v1 = s1_val;
+        v1  = s1_val;
+        // the post-`E` row carries no queue pop, so `s1_val`/`s1_wbyte` are
+        // the whole of both rails here
+        wb1 = s1_wbyte;
         bsw = (e_s1 == 5'd23);
         if (e_s1 == 5'd6) opr_fresh_n = 1'b0;
         if (e_s1 == 5'd20) begin
@@ -27,15 +30,16 @@ begin
         end
     end
     if (e_have2) begin
-        v2 = s2_val;
+        v2  = s2_val;
+        wb2 = s2_wbyte;
         if (e_s2 == 4'd4) begin
             if (sig_mask != 16'd0)
                 stat_n = (stat_n & ~sig_mask) | (sig_flags & sig_mask);
         end
         if (!((e_s2 == 4'd4) && !sig_commits)) begin
             case (e_d2)
-                2'd0: tmpa_n = v2;
-                2'd1: tmpb_n = v2;
+                2'd0: begin tmpa_n = v2; tmpa_byte_n = wb2; end
+                2'd1: begin tmpb_n = v2; tmpb_byte_n = wb2; end
                 2'd2: ind_n  = v2;
                 default: ;
             endcase
@@ -51,7 +55,6 @@ begin
         al_spent_n   = 1'b0;
         al_op_n      = r_aluop;
         al_tmp_n     = r_alutmp;
-        al_byte_n    = op8_eff;                     // D1
         al_eaconst_n = 1'b0;
     end else if (e_type == TY_CTL && !e_farjmp) begin
         case (e_ictl)

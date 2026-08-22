@@ -31,7 +31,6 @@
             SSA_E_BIT_N:               bit_n_n = ss_wdata[3:0];
             SSA_E_AL_OP:               al_op_n = ss_wdata[4:0];
             SSA_E_AL_TMP:              al_tmp_n = ss_wdata[1:0];
-            SSA_E_AL_BYTE:             al_byte_n = ss_wdata[0];
             SSA_E_AL_EACONST:          al_eaconst_n = ss_wdata[0];
             SSA_E_AL_EAVAL:            al_eaval_n = ss_wdata;
             SSA_E_AL_ADJUST:           al_adjust_n = ss_wdata[1:0];
@@ -82,6 +81,12 @@
             SSA_E_PEND_IO:             pend_io_n = ss_wdata[0];
             SSA_E_OPR_FRESH:           opr_fresh_n = ss_wdata[0];
             SSA_E_OPR_LOADED:          opr_loaded_n = ss_wdata[0];
+            SSA_E_WIDTH_TAGS:          begin
+                tmpa_byte_n = ss_wdata[0]; tmpb_byte_n = ss_wdata[1];
+                tmpc_byte_n = ss_wdata[2]; opr_byte_n  = ss_wdata[3];
+                rdp0_byte_n = ss_wdata[4]; rdp1_byte_n = ss_wdata[5];
+                rdq0_byte_n = ss_wdata[6]; rdq1_byte_n = ss_wdata[7];
+            end
             SSA_E_GHOST_DISCARD:       ghost_rd_discard_n = ss_wdata[0];
             SSA_E_EA_RESIDUE:          ea_residue_n = ss_wdata;
             SSA_E_EA_PAIR_RHS:         ea_pair_rhs_n = ss_wdata;

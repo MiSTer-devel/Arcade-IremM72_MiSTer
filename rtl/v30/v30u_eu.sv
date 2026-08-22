@@ -256,10 +256,19 @@ reg [15:0] stat;
 reg        sign_neg;
 reg  [3:0] bit_n;
 
+// --- THE OPERAND-WIDTH TAGS (sim/state.h::Machine::tmp_byte / opr_byte) -----
+// The micro-ALU's flag taps -- and the iterative unit's carry chain -- sit at
+// 8 or 16 bits, and WHICH is a property of the OPERAND the ALU was handed, not
+// of the instruction's w-bit.  Every datapath rail either presents a 16-bit
+// datum or presents an 8-bit one in the low lane with something FOREIGN in the
+// upper one; these bits latch which, beside the register that took it.
+// `al_byte` USED TO LIVE HERE and is RETIRED -- see `al_width_byte` below.
+reg        tmpa_byte, tmpb_byte, tmpc_byte;
+reg        opr_byte;
+
 // --- the latched micro-ALU (sim/state.h::AluLatch) -------------------------
 reg  [4:0] al_op;
 reg  [1:0] al_tmp;
-reg        al_byte;
 reg        al_eaconst;
 reg [15:0] al_eaval;
 reg  [1:0] al_adjust;      // 0 none, 1 ADJD, 2 ADJA
@@ -394,6 +403,18 @@ reg        opr_loaded;
 reg [15:0] rdq0, rdq1;     // completed reads awaiting OPR delivery
 reg  [1:0] rdq_n;
 reg  [1:0] rd_pending;     // posted reads (rd_last) not yet completed
+// ...AND THE WIDTH TAG RIDES IN THE SAME SLOTS.  A byte cycle fills only one
+// lane, so the word it delivers into OPR is a BYTE datum and OPR's upper lane
+// holds the bus's other byte -- foreign, exactly the `rb16` sibling-lane case.
+// `eu_rdata_n` carries no such tag: "the bus has NO RESULT TAGS -- it returns
+// words in order" (the 8F discard, below), and THAT ordering is what makes one
+// bit per slot sufficient.  The bit is written where the read is POSTED
+// (`rdp*`, in issue order), shifted into the completed-read store's slot at the
+// same completion that writes `rdq*`, and popped into `opr_byte` at the same
+// delivery that writes `opr`.  No new structure: the two stores the EU already
+// keeps are one bit wider.
+reg        rdp0_byte, rdp1_byte;  // posted-read record, oldest first
+reg        rdq0_byte, rdq1_byte;  // completed-read store, oldest first
 reg        ghost_rd_discard; // displaced tail completion after a mod3 POP read
 reg  [1:0] rd_done_cnt;    // completed, not yet consumed by an F row
 reg        rd_age0;        // the oldest completion pulsed on THIS clock
@@ -1045,8 +1066,10 @@ endfunction
 // nine bits and claimed that was the row's whole opcode context; it was not.
 // S_DECODE2 OVERWRITES `op8` on edge `c` exactly as it overwrites `opc_reg`
 // (`v30u_eu_step.svh`'s `op8 = ld_byte`), and the post-`E` row reads it in
-// three places: `al_byte = op8` when it latches an ALU op, `SIGNTGL`'s
-// `tmpb[7]` vs `tmpb[15]`, and `dir*sz` as a Source1.  Ten bits, not nine.
+// three places: `SIGNTGL`'s `tmpb[7]` vs `tmpb[15]`, `dir*sz` as a Source1,
+// and the ALU width's CLAUSE 2 (`al_width_byte`'s ABS arm; this used to be
+// `al_byte = op8`, the blanket rule, and that was the REP CL==0 defect).
+// Ten bits, not nine.
 // F22 SETTLED (pass 4) -- ...and `pfxcnt` travels with them, for the SAME
 // reason, which is the reason the residue existed at all.
 //
@@ -1117,9 +1140,57 @@ assign tmps_lat[1] = tmpb;
 assign tmps_lat[2] = tmpc;
 assign tmps_lat[3] = 16'd0;
 
+//============================================================================
+// THE ALU'S WIDTH IS THE WIDTH OF THE OPERANDS IT IS HANDED -- EXCEPT FOR THE
+// MULTIPLY/DIVIDE UNIT'S OPERAND CONDITIONING, WHICH IS THE INSTRUCTION'S.
+//
+//     A 16-BIT OPERATION NEEDS TWO 16-BIT OPERANDS.  The ALU works at BYTE
+//     width when EITHER of the two it is handed carries only eight
+//     significant bits -- OR WHEN THE OPERATION IS ABS.
+//
+// `al_byte = op8` -- the instruction's w-bit, which stood here -- IS THE
+// DEFECT, and ITS FLOP IS RETIRED (save-state code 9'h11A is now a hole).
+// The REP entry test is ONE ROW BANK SHARED between the byte and the word
+// forms (`docs/V20UC.TXT:186`, `001.1010010?.00 <rep> A4,A5`), so 0094's
+// `CX -> tmpb | ALU PASS tmpb` computed Z over the LOW EIGHT BITS of CX on a
+// byte string op: `REP MOVSB` with CX = 0x0100 read zero and ran ZERO TIMES.
+// The 29-bit ROM row has no width field, so the row cannot be the source.
+// JCXZ's 0140 is the SAME row shape and was right only by the accident of its
+// w-bit.  (sim/alu.h carries the derivation and the four refuted rivals; the
+// C++ leg is `be4eb2c32f`.)
+//
+// CLAUSE 2 -- ABS is the multiply/divide unit's operand conditioning, and that
+// unit's width is the INSTRUCTION's by construction (8x8->16 or 16x16->32;
+// 16/8 or 32/16).  What licenses the clause is CONFINEMENT, checked against
+// the artifact independently of any score: `[-1E-]` occurs in EXACTLY THREE
+// ROWS in the whole ROM -- 0184 (F6/F7 /5 IMUL), 0198 (F6/F7 /7 IDIV) and
+// 0292 (69,6B IMULI) -- all of them that path, and 0198 being the DIVIDE entry
+// is what makes it a statement about the shared iterative unit rather than
+// about multiply.  *FALSIFIER*: any ABS row outside the multiply/divide path
+// refutes it outright.  The test is on `eff_op`, the RESOLVED operation, since
+// `ALU OPC` reaches ABS through `opc_base = INC` plus a ModR/M reg of 6.  It
+// reads `op8_eff`, the same post-`E` rendering `eff_op` itself reads, and it
+// is the same bit the ABS ARM already reads for its sign capture
+// (`v30u_eu_row.svh`'s `sign_neg_n`), so magnitude and sign now come from one
+// place instead of two.
+//
+// NOTHING LATCHES THE WIDTH, and it MUST NOT: `80/81/83` latch `ALU OPC tmpa`
+// at 003E and only load port A with the r/m operand at 003F, ONE ROW LATER.
+// It is read combinationally, at the instant the consuming row evaluates, from
+// the tag of the register the port takes its operand from.  Port A is ALWAYS
+// tmpb (a fixed read port, so its tag is always in the OR); port B is the
+// register the row's `Tmp` field names, where `Tmp == 3` selects the hardwired
+// ZERO rail -- a 16-bit constant, not a register, so WORD.  One OR of two tag
+// bits: no operation decode and no port selection.
+//============================================================================
+wire al_tag_b = (al_tmp == 2'd0) ? tmpa_byte
+              : (al_tmp == 2'd1) ? tmpb_byte
+              : (al_tmp == 2'd2) ? tmpc_byte : 1'b0;
+wire al_width_byte = (eff_op == A_ABS) ? op8_eff : (tmpb_byte || al_tag_b);
+
 // The datapath is 16 bits ALWAYS for the ADD-class ops; `byte` selects only
 // where the flag taps sit (ledger, "ALU width").
-wire ev_byte = al_byte && (eff_op != A_INC2) && (eff_op != A_DEC2);
+wire ev_byte = al_width_byte && (eff_op != A_INC2) && (eff_op != A_DEC2);
 wire [15:0] port_a = tmpb;
 wire [15:0] port_b_raw = tmps[al_tmp];
 wire [15:0] port_b = al_bitarm ? (port_b_raw & (16'd1 << al_bitn))
@@ -1279,7 +1350,7 @@ end
 // --- the ONE shared iterative stepper --------------------------------------
 // MUL (shift-add), DIV (restoring), ROL12 and the shift/rotate family are the
 // SAME unit stepped once per clock; no lpm_divide, no per-op datapath.
-wire        it_byte = al_byte;
+wire        it_byte = al_width_byte;
 wire [15:0] it_a    = it_byte ? {8'd0, tmpb[7:0]} : tmpb;
 wire [15:0] it_bop  = tmps[al_tmp];
 wire [15:0] it_mask = it_byte ? 16'h00FF : 16'hFFFF;
@@ -1393,6 +1464,13 @@ wire [15:0] sig_mask  = al_eaconst ? 16'd0
                       : is_iter ? (al_spent ? 16'd0 : it_fmask)
                                 : ev_mask;
 wire        sig_commits = al_eaconst ? 1'b1 : (is_iter ? 1'b1 : ev_commits);
+// ...AND SIGMA CARRIES THE WIDTH THE ALU WORKED AT, so a `SIGMA -> tmp`
+// transfer PROPAGATES the tag instead of losing it.  It is the ALU's OWN
+// width and NOT a property of what `sigma` happens to mux -- an `ea_const`
+// row is deliberately NOT special-cased here, exactly as `exec_impl.h` does
+// not special-case it (`ctx.byte = alu_width_byte(...)`, unconditional, while
+// `alu_eval` returns the EA early).
+wire        sig_byte    = al_width_byte;
 
 //============================================================================
 // SOURCE / DESTINATION MUXES
@@ -1458,27 +1536,74 @@ wire [15:0] r_rd = (r_kind == OK_REG)  ? (r_byte ? rb16(r_idx, gpr[r_par_idx])
 wire [15:0] dirsz = (op8_eff ? (psw[FDIR] ? 16'hFFFF : 16'h0001)
                              : (psw[FDIR] ? 16'hFFFE : 16'h0002));
 
+//----------------------------------------------------------------------------
+// THE SOURCE1 CLASSIFICATION.  `s1_byte` and `s1_wbyte` are DIFFERENT
+// PROPERTIES, which is why the second is not just a copy of the first:
+//
+//   `s1_byte` is LANE REPLICATION -- the rail drives its eight bits on BOTH
+//   halves of the source bus, so an H-half write (Dest1 22/23, which takes
+//   bits 15:8) picks the same byte up.  Only Q and CONST do that.  It had NO
+//   READER here and the row rebuilt the same expression inline; it is the
+//   reader now, and the two cannot drift apart any more.
+//
+//   `s1_wbyte` is the DATUM WIDTH -- how many of the bits the rail presents
+//   are significant.  It is what the ALU's flag taps and the iterative unit's
+//   carry chain follow (`al_width_byte`).
+//
+// THE CRITERION IS ONE SENTENCE, the sibling-lane law of `rb16` generalised:
+//
+//     A RAIL IS TAGGED BYTE WHEN ITS UPPER LANE CARRIES SOMETHING THAT IS NOT
+//     PART OF THIS DATUM.
+//
+// A rail whose upper lane holds a CORRECT extension -- a zero, a sign, a
+// constant's leading zeroes -- presents a valid 16-bit number and is WORD,
+// however small the number is.  "SMALL" IS NOT "BYTE": CONST, ZEROS, ONES and
+// PFXCNT are clean 16-bit values.  Only four rails carry a foreign upper lane:
+//
+//   7     Q       the prefetched byte, driven on both lanes (that is `s1_byte`)
+//   16    AL:AH   the HIGH byte read through the 8-bit rotator -- AH in the low
+//                 lane with AL riding along as the sibling.  Its ROM consumers
+//                 take the low lane as the datum (001B, 007C, 01DE, and
+//                 018C/019D where it is the byte divide's dividend high half).
+//   18/19 R / M   a BYTE operand read: the sibling byte sits on the unused
+//                 lane, which is `rb16` itself.  The decoder's own width, and
+//                 the only encodings it parameterises.
+//   6     OPR     when a BYTE bus cycle filled it, the upper lane is the other
+//                 half of the bus.  This is what makes CMPSB/SCASB compare at
+//                 byte width (00A0/00A2 `OPR -> tmpb/tmpa`).
+//
+// The temps (12-14) and SIGMA (20) PROPAGATE the tag of what produced them.
+// Everything else is WORD.
+//
+// The two disagree on CONST, and that is not a contradiction: `s1_byte` is
+// read ONLY by the H-half writes, and NO ROM ROW EVER DRIVES AN H-HALF WRITE
+// FROM CONST (measured: zero `CONST -> tmp?H` rows), so CONST's lane behaviour
+// is unobservable and carries no evidence either way.  The datum criterion
+// decides it, and it decides it WORD.
+//----------------------------------------------------------------------------
 reg  [15:0] s1_val;
 reg         s1_byte;
+reg         s1_wbyte;
 always @* begin
-    s1_byte = 1'b0;
+    s1_byte  = 1'b0;
+    s1_wbyte = 1'b0;                 // WORD unless the case says otherwise
     case (e_s1)
         5'd0,5'd1,5'd2,5'd3: s1_val = sreg[e_s1[1:0]];
         5'd4:  s1_val = pc;
-        5'd6:  s1_val = opr;
-        5'd7:  begin s1_val = {8'd0, q_byte}; s1_byte = 1'b1; end
+        5'd6:  begin s1_val = opr;  s1_wbyte = opr_byte; end
+        5'd7:  begin s1_val = {8'd0, q_byte}; s1_byte = 1'b1; s1_wbyte = 1'b1; end
         5'd8:  s1_val = dirsz;
         5'd9:  s1_val = 16'd0;
         5'd10: s1_val = {8'd0, pfxcnt_eff};        // F22
-        5'd12: s1_val = tmpa;
-        5'd13: s1_val = tmpb;
-        5'd14: s1_val = tmpc;
+        5'd12: begin s1_val = tmpa; s1_wbyte = tmpa_byte; end
+        5'd13: begin s1_val = tmpb; s1_wbyte = tmpb_byte; end
+        5'd14: begin s1_val = tmpc; s1_wbyte = tmpc_byte; end
         5'd15: s1_val = flags_rd;
-        5'd16: s1_val = {gpr[R_AW][7:0], gpr[R_AW][15:8]};
+        5'd16: begin s1_val = {gpr[R_AW][7:0], gpr[R_AW][15:8]}; s1_wbyte = 1'b1; end
         5'd17: s1_val = count;
-        5'd18: s1_val = r_rd;
-        5'd19: s1_val = m_rd;
-        5'd20: s1_val = sigma;
+        5'd18: begin s1_val = r_rd; s1_wbyte = r_byte; end
+        5'd19: begin s1_val = m_rd; s1_wbyte = m_byte; end
+        5'd20: begin s1_val = sigma; s1_wbyte = sig_byte; end
         5'd21: s1_val = 16'hFFFF;
         5'd22: s1_val = {8'd0, opc_reg & 8'h38};
         5'd23: begin s1_val = {10'd0, r_constval}; s1_byte = 1'b1; end
@@ -1486,14 +1611,19 @@ always @* begin
     endcase
 end
 
+// Source2, the SAME classification: ONES (0), ZEROS (6) and the 16-bit
+// register-file reads (>=8) are WORD; SIGMA (4) propagates; Q (5) is the queue
+// byte; R (7) is the decoder's own operand width.
 reg [15:0] s2_val;
+reg        s2_wbyte;
 always @* begin
+    s2_wbyte = 1'b0;
     case (e_s2)
         4'd0: s2_val = 16'hFFFF;
-        4'd4: s2_val = sigma;
-        4'd5: s2_val = {8'd0, q_byte};
+        4'd4: begin s2_val = sigma; s2_wbyte = sig_byte; end
+        4'd5: begin s2_val = {8'd0, q_byte}; s2_wbyte = 1'b1; end
         4'd6: s2_val = 16'd0;
-        4'd7: s2_val = r_rd;
+        4'd7: begin s2_val = r_rd; s2_wbyte = r_byte; end
         default: s2_val = (e_s2 >= 4'd8) ? gpr[e_s2[2:0]] : 16'd0;
     endcase
 end
@@ -2529,6 +2659,8 @@ reg     [15:0] sreg_r [0:3];
 reg     [15:0] pc_r;
 reg     [15:0] psw_r;
 reg     [15:0] tmpa_r;
+reg            tmpa_byte_r, tmpb_byte_r, tmpc_byte_r;
+reg            opr_byte_r;
 reg     [15:0] tmpb_r;
 reg     [15:0] tmpc_r;
 reg     [15:0] ea_residue_r;
@@ -2543,7 +2675,6 @@ reg            sign_neg_r;
 reg      [3:0] bit_n_r;
 reg      [4:0] al_op_r;
 reg      [1:0] al_tmp_r;
-reg            al_byte_r;
 reg            al_eaconst_r;
 reg     [15:0] al_eaval_r;
 reg      [1:0] al_adjust_r;
@@ -2609,6 +2740,8 @@ reg            pend_byte_r;
 reg            pend_io_r;
 reg            opr_fresh_r;
 reg            opr_loaded_r;
+reg            rdp0_byte_r, rdp1_byte_r;
+reg            rdq0_byte_r, rdq1_byte_r;
 reg     [15:0] rdq0_r;
 reg     [15:0] rdq1_r;
 reg      [1:0] rdq_n_r;
@@ -2661,6 +2794,10 @@ always @* begin
     pc_r = pc;
     psw_r = psw;
     tmpa_r = tmpa;
+    tmpa_byte_r = tmpa_byte;
+    tmpb_byte_r = tmpb_byte;
+    tmpc_byte_r = tmpc_byte;
+    opr_byte_r = opr_byte;
     tmpb_r = tmpb;
     tmpc_r = tmpc;
     ea_residue_r = ea_residue;
@@ -2675,7 +2812,6 @@ always @* begin
     bit_n_r = bit_n;
     al_op_r = al_op;
     al_tmp_r = al_tmp;
-    al_byte_r = al_byte;
     al_eaconst_r = al_eaconst;
     al_eaval_r = al_eaval;
     al_adjust_r = al_adjust;
@@ -2741,6 +2877,10 @@ always @* begin
     pend_io_r = pend_io;
     opr_fresh_r = opr_fresh;
     opr_loaded_r = opr_loaded;
+    rdp0_byte_r = rdp0_byte;
+    rdp1_byte_r = rdp1_byte;
+    rdq0_byte_r = rdq0_byte;
+    rdq1_byte_r = rdq1_byte;
     rdq0_r = rdq0;
     rdq1_r = rdq1;
     rdq_n_r = rdq_n;
@@ -2792,11 +2932,13 @@ always @* begin
         for (rsi = 0; rsi < 4; rsi = rsi + 1) sreg_r[rsi] = 16'd0;
         pc_r = 16'd0; psw_r = PSW_FORCED;
         tmpa_r = 16'd0; tmpb_r = 16'd0; tmpc_r = 16'd0;
+        tmpa_byte_r = 1'b0; tmpb_byte_r = 1'b0; tmpc_byte_r = 1'b0;
+        opr_byte_r = 1'b0;
         ea_residue_r = 16'd0;
         ea_pair_rhs_r = 16'd0; ea_pair_valid_r = 1'b0;
         opr_r = 16'd0; ind_r = 16'd0; count_r = 16'd0; pfxcnt_r = 8'd0;
         stat_r = 16'd0; sign_neg_r = 1'b0; bit_n_r = 4'd0;
-        al_op_r = A_ADD; al_tmp_r = 2'd0; al_byte_r = 1'b0;
+        al_op_r = A_ADD; al_tmp_r = 2'd0;
         al_eaconst_r = 1'b0; al_eaval_r = 16'd0;
         al_adjust_r = 2'd0; al_adjtmp_r = 2'd0; al_bitarm_r = 1'b0; al_bitn_r = 4'd0;
         al_spent_r = 1'b0;
@@ -2815,6 +2957,8 @@ always @* begin
         pend_byte_r = 1'b0; pend_io_r = 1'b0; opr_fresh_r = 1'b0;
         opr_loaded_r = 1'b0;
         rdq0_r = 16'd0; rdq1_r = 16'd0; rdq_n_r = 2'd0;
+        rdp0_byte_r = 1'b0; rdp1_byte_r = 1'b0;
+        rdq0_byte_r = 1'b0; rdq1_byte_r = 1'b0;
         rd_pending_r = 2'd0; ghost_rd_discard_r = 1'b0;
         rd_done_cnt_r = 2'd0; rd_age0_r = 1'b0;
         iend_owed_r = 1'b0; pe_opc_reg_r = 8'd0; pe_opc8080_r = 1'b0; pe_op8_r = 1'b0;
@@ -2911,6 +3055,8 @@ reg     [15:0] sreg_n [0:3];
 reg     [15:0] pc_n;
 reg     [15:0] psw_n;
 reg     [15:0] tmpa_n;
+reg            tmpa_byte_n, tmpb_byte_n, tmpc_byte_n;
+reg            opr_byte_n;
 reg     [15:0] tmpb_n;
 reg     [15:0] tmpc_n;
 reg     [15:0] ea_residue_n;
@@ -2925,7 +3071,6 @@ reg            sign_neg_n;
 reg      [3:0] bit_n_n;
 reg      [4:0] al_op_n;
 reg      [1:0] al_tmp_n;
-reg            al_byte_n;
 reg            al_eaconst_n;
 reg     [15:0] al_eaval_n;
 reg      [1:0] al_adjust_n;
@@ -2991,6 +3136,8 @@ reg            pend_byte_n;
 reg            pend_io_n;
 reg            opr_fresh_n;
 reg            opr_loaded_n;
+reg            rdp0_byte_n, rdp1_byte_n;
+reg            rdq0_byte_n, rdq1_byte_n;
 reg     [15:0] rdq0_n;
 reg     [15:0] rdq1_n;
 reg      [1:0] rdq_n_n;
@@ -3141,6 +3288,8 @@ reg        stop;
 reg  [3:0] chain;
 reg [15:0] v1, v2;
 reg        bsw;             // the row's byte-source flag (Q / CONST)
+reg        wb1, wb2;        // ...and the two transfers' OPERAND-WIDTH tags
+reg        rdh_byte;        // the completing read's tag, off the record's head
 reg [13:0] pv;
 reg  [3:0] nloc;
 reg        carry, taken, bubble, retire_now;
@@ -3180,6 +3329,10 @@ always @* begin
     pc_n = pc;
     psw_n = psw;
     tmpa_n = tmpa;
+    tmpa_byte_n = tmpa_byte;
+    tmpb_byte_n = tmpb_byte;
+    tmpc_byte_n = tmpc_byte;
+    opr_byte_n = opr_byte;
     tmpb_n = tmpb;
     tmpc_n = tmpc;
     ea_residue_n = ea_residue;
@@ -3194,7 +3347,6 @@ always @* begin
     bit_n_n = bit_n;
     al_op_n = al_op;
     al_tmp_n = al_tmp;
-    al_byte_n = al_byte;
     al_eaconst_n = al_eaconst;
     al_eaval_n = al_eaval;
     al_adjust_n = al_adjust;
@@ -3260,6 +3412,10 @@ always @* begin
     pend_io_n = pend_io;
     opr_fresh_n = opr_fresh;
     opr_loaded_n = opr_loaded;
+    rdp0_byte_n = rdp0_byte;
+    rdp1_byte_n = rdp1_byte;
+    rdq0_byte_n = rdq0_byte;
+    rdq1_byte_n = rdq1_byte;
     rdq0_n = rdq0;
     rdq1_n = rdq1;
     rdq_n_n = rdq_n;
@@ -3330,6 +3486,9 @@ always @* begin
     v1 = 16'd0;
     v2 = 16'd0;
     bsw = 1'b0;
+    wb1 = 1'b0;
+    wb2 = 1'b0;
+    rdh_byte = 1'b0;
     pv = 14'd0;
     nloc = 4'd0;
     carry = 1'b0;
@@ -3449,6 +3608,10 @@ always @* begin
             // it is what a store with a fixed number of slots physically does.
             // Inert on every graded path by sec.27.1's proof; load-bearing in
             // fabric, where the in-silicon fuzz runs with no assertions at all.
+            // The record's head belongs to THIS completion (the bus returns
+            // words in order); take it, then close the record up.
+            rdh_byte = rdp0_byte_n;
+            rdp0_byte_n = rdp1_byte_n;
             if (rd_pending_n != 2'd0) rd_pending_n = rd_pending_n - 2'd1;
             // THE 8F GHOST READ'S DISCARD -- ONE PREDICATE.
             //
@@ -3470,7 +3633,11 @@ always @* begin
             end else begin
                 if (rd_done_cnt_n == 2'd0) rd_age0_n = 1'b1;
                 if (rd_done_cnt_n != 2'd3) rd_done_cnt_n = rd_done_cnt_n + 2'd1;
-                if (rdq_n_n == 2'd0) rdq0_n = eu_rdata_n; else rdq1_n = eu_rdata_n;
+                if (rdq_n_n == 2'd0) begin
+                    rdq0_n = eu_rdata_n; rdq0_byte_n = rdh_byte;
+                end else begin
+                    rdq1_n = eu_rdata_n; rdq1_byte_n = rdh_byte;
+                end
                 if (rdq_n_n != 2'd2) rdq_n_n = rdq_n_n + 2'd1;
             end
         end
@@ -3699,6 +3866,10 @@ always @(posedge clk) begin
              : (rd_edge_psw_take && !ss_we) ? rd_edge_psw
              :                                psw_n;
         tmpa <= (srst && !ss_we) ? tmpa_r : tmpa_n;
+        tmpa_byte <= (srst && !ss_we) ? tmpa_byte_r : tmpa_byte_n;
+        tmpb_byte <= (srst && !ss_we) ? tmpb_byte_r : tmpb_byte_n;
+        tmpc_byte <= (srst && !ss_we) ? tmpc_byte_r : tmpc_byte_n;
+        opr_byte  <= (srst && !ss_we) ? opr_byte_r  : opr_byte_n;
         tmpb <= (srst && !ss_we) ? tmpb_r : tmpb_n;
         tmpc <= (srst && !ss_we) ? tmpc_r : tmpc_n;
         ea_residue <= (srst && !ss_we) ? ea_residue_r : ea_residue_n;
@@ -3713,7 +3884,6 @@ always @(posedge clk) begin
         bit_n <= (srst && !ss_we) ? bit_n_r : bit_n_n;
         al_op <= (srst && !ss_we) ? al_op_r : al_op_n;
         al_tmp <= (srst && !ss_we) ? al_tmp_r : al_tmp_n;
-        al_byte <= (srst && !ss_we) ? al_byte_r : al_byte_n;
         al_eaconst <= (srst && !ss_we) ? al_eaconst_r : al_eaconst_n;
         al_eaval <= (srst && !ss_we) ? al_eaval_r : al_eaval_n;
         al_adjust <= (srst && !ss_we) ? al_adjust_r : al_adjust_n;
@@ -3787,6 +3957,10 @@ always @(posedge clk) begin
         pend_io <= (srst && !ss_we) ? pend_io_r : pend_io_n;
         opr_fresh <= (srst && !ss_we) ? opr_fresh_r : opr_fresh_n;
         opr_loaded <= (srst && !ss_we) ? opr_loaded_r : opr_loaded_n;
+        rdp0_byte <= (srst && !ss_we) ? rdp0_byte_r : rdp0_byte_n;
+        rdp1_byte <= (srst && !ss_we) ? rdp1_byte_r : rdp1_byte_n;
+        rdq0_byte <= (srst && !ss_we) ? rdq0_byte_r : rdq0_byte_n;
+        rdq1_byte <= (srst && !ss_we) ? rdq1_byte_r : rdq1_byte_n;
         rdq0 <= (srst && !ss_we) ? rdq0_r : rdq0_n;
         rdq1 <= (srst && !ss_we) ? rdq1_r : rdq1_n;
         rdq_n <= (srst && !ss_we) ? rdq_n_r : rdq_n_n;

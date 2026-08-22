@@ -126,7 +126,14 @@ package v30_ss_pkg;
   // 8F GHOST LAUNCH LAW: 0x8D -> 0x8E.  SIX addresses APPENDED (9'h06D-9'h072)
   // for the launch decoration's own state.  ONE appended group, ONE bump; no
   // symbol is renumbered and no field is widened.
-  localparam int          SS_VERSION   = 8'h8E;   // ucore map v14 (8F launch law)
+  // THE OPERAND-WIDTH TAGS (the REP CL==0 fix): 0x8E -> 0x8F.  ONE address is
+  // RETIRED (9'h11A, `al_byte` -- the latched ALU width, which is the defect)
+  // and ONE is APPENDED (9'h17E, `SSA_E_WIDTH_TAGS`, eight bits).  SS_EU_COUNT
+  // is therefore UNCHANGED and SS_COUNT with it -- which is EXACTLY why the
+  // version must move: the stream is the same LENGTH and a different SHAPE,
+  // and `ss_lint`'s constant check compares counts.  Same reasoning as the
+  // 0x8A -> 0x8B width bump.  No symbol is renumbered.
+  localparam int          SS_VERSION   = 8'h8F;   // ucore map v15 (operand-width tags)
   localparam logic [8:0]  SSA_TAG      = 9'h000;
   localparam logic [8:0]  SS_BIU_BASE  = 9'h001;
   localparam int          SS_BIU_COUNT = 109;  // U4 F49 (+5); s11 (-4); s21 (-1); H3 (+1);
@@ -138,7 +145,8 @@ package v30_ss_pkg;
                                               // SM3 s26 / §87.A (+1, opr_loaded);
                                               // WRFUZZ LEA (+1, EA residue);
                                               // WRFUZZ LEA (+2, pair rail);
-                                              // WRFUZZ 8F (+1, discarded read)
+                                              // WRFUZZ 8F (+1, discarded read);
+                                              // width tags (-1 al_byte, +1 tags)
   localparam int          SS_COUNT     = 1 + SS_BIU_COUNT + SS_EU_COUNT;
   localparam logic [15:0] SS_TAG       = {8'(SS_VERSION), 8'(SS_COUNT)};
 
@@ -287,12 +295,19 @@ package v30_ss_pkg;
       ss_addr_of = a;
     end
     else begin
-      // The 8F ghost READ has taken 9'h176, the code L1 RESERVED for it, so
-      // the EU region is dense again and the hole term is GONE.  Nothing is
-      // renumbered by its removal: 0x177-0x179 sat one step past the hole and
-      // now sit one step past the occupant, which is the same address.  The
-      // BIU's 9'h038 is the map's only hole.
-      ss_addr_of = SS_EU_BASE + 9'(i - 1 - SS_BIU_COUNT);
+      // The EU region now carries TWO skips, in the BIU branch's own shape.
+      //   9'h11A -- RETIRED (`al_byte`, the latched ALU width; the width is a
+      //             wire now, and a wire has no address).
+      //   9'h17A-9'h17D -- RESERVED, not retired: they are named above for the
+      //             8F ghost FEED and the PF_LOST decoder hold, so the
+      //             operand-width tags append PAST them at 9'h17E.
+      // Nothing is renumbered by either: every surviving symbol keeps the
+      // address it has always had, and what moves is the stream INDEX it
+      // appears at -- which is what the SS_VERSION bump makes safe.
+      a = SS_EU_BASE + 9'(i - 1 - SS_BIU_COUNT);
+      if (a >= 9'h11A) a = a + 9'd1;
+      if (a >= 9'h17A) a = a + 9'd4;
+      ss_addr_of = a;
     end
   endfunction
 
@@ -363,7 +378,15 @@ package v30_ss_pkg;
   localparam logic [8:0] SSA_E_BIT_N                = 9'h117;
   localparam logic [8:0] SSA_E_AL_OP                = 9'h118;
   localparam logic [8:0] SSA_E_AL_TMP               = 9'h119;
-  localparam logic [8:0] SSA_E_AL_BYTE              = 9'h11A;
+  // 9'h11A IS RETIRED, NOT REUSED.  It held `al_byte`, the LATCHED ALU width
+  // -- `al_byte = op8`, the instruction's w-bit -- which is the REP CL==0
+  // defect and is gone: the width is now READ COMBINATIONALLY from the tag of
+  // the operand register the ALU's port takes its operand from
+  // (`al_width_byte`), and a combinational wire has no flop and no address.
+  // This is the EU region's FIRST MID-REGION RETIREMENT and it follows F56's
+  // precedent exactly (`SSA_B_PF_LAND` / 9'h038, the BIU's): the dense stream
+  // STEPS OVER the code, NO SURVIVING SYMBOL IS RENUMBERED, and the code stays
+  // vacant so a v14 stream can never be read as a v15 one by accident.
   localparam logic [8:0] SSA_E_AL_EACONST           = 9'h11B;
   localparam logic [8:0] SSA_E_AL_EAVAL             = 9'h11C;
   localparam logic [8:0] SSA_E_AL_ADJUST            = 9'h11D;
@@ -535,7 +558,24 @@ package v30_ss_pkg;
   // without the feed.  Neither address is in this tree.  They are named here
   // so a later landing -- a faster fabric, or the mechanism reformulated so
   // the successor's pop does not ride the data edge -- reuses the same codes
-  // for the same meanings.
+  // for the same meanings.  A RESERVED CODE IS NOT FREE SPACE: the append
+  // below goes PAST them, at 9'h17E, exactly as 9'h176 was left alone until
+  // its own named occupant arrived.
+
+  // THE OPERAND-WIDTH TAGS -- ONE ADDRESS, EIGHT BITS, appended at the end of
+  // the EU region.  The ALU's width is the width of the OPERANDS it is handed
+  // (`al_width_byte`), so every register that can hand it one carries a bit
+  // saying whether its upper lane holds part of this datum or something
+  // foreign.  Three temps, OPR, and the two bus stores' slots -- the posted
+  // read's record and the completed-read store -- because a byte cycle's word
+  // is a BYTE datum and the bus returns it with no tag of its own.
+  //   [2:0]  tmpa_byte, tmpb_byte, tmpc_byte
+  //   [3]    opr_byte
+  //   [5:4]  rdp0_byte, rdp1_byte   (posted, oldest first)
+  //   [7:6]  rdq0_byte, rdq1_byte   (completed, oldest first)
+  // A freeze taken between a byte read's post and its consumption that did not
+  // carry these would restore a part that computes CMPSB's flags at word width.
+  localparam logic [8:0] SSA_E_WIDTH_TAGS           = 9'h17E;
 
   function automatic int ss_field_width(input logic [8:0] a);
     case (a)
@@ -687,7 +727,6 @@ package v30_ss_pkg;
       SSA_E_BIT_N:               ss_field_width = 4;
       SSA_E_AL_OP:               ss_field_width = 5;
       SSA_E_AL_TMP:              ss_field_width = 2;
-      SSA_E_AL_BYTE:             ss_field_width = 1;
       SSA_E_AL_EACONST:          ss_field_width = 1;
       SSA_E_AL_EAVAL:            ss_field_width = 16;
       SSA_E_AL_ADJUST:           ss_field_width = 2;
@@ -778,6 +817,7 @@ package v30_ss_pkg;
       SSA_E_IRQ_LATCH:           ss_field_width = 8;
       SSA_E_BRK:                 ss_field_width = 7;
       SSA_E_OPR_LOADED:          ss_field_width = 1;   // §87.A
+      SSA_E_WIDTH_TAGS:          ss_field_width = 8;   // the operand-width tags
       SSA_E_GHOST_DISCARD:       ss_field_width = 1;
       SSA_E_EA_RESIDUE:          ss_field_width = 16;
       SSA_E_EA_PAIR_RHS:         ss_field_width = 16;

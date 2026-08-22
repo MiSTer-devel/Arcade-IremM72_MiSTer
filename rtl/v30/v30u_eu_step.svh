@@ -549,6 +549,14 @@ S_PRERD: if (chain == 4'd0) begin
         if (eu_slot_busy_n) stop = 1'b1;
         else begin
             row_posted_n = 1'b1;
+            // The pre-read fills OPR at the OPERAND's width, exactly as a
+            // microcoded read does; the tag rides with the datum
+            // (`loader_impl.h`: `m.opr_byte = mo.byte`).  Note it is the
+            // OPERAND's width and not the bus cycle's: `eu_word` forces a word
+            // cycle on the ghost pre-read tail, and the DATUM is still the
+            // decoder's byte there.
+            if (rd_pending_n == 2'd0)      rdp0_byte_n = pr_byte;
+            else if (rd_pending_n == 2'd1) rdp1_byte_n = pr_byte;
             // F48/U4: saturate, do not wrap (see v30u_eu_row.svh).
             if (rd_pending_n != 2'd3) rd_pending_n = rd_pending_n + 2'd1;
             stop = 1'b1;
@@ -559,6 +567,8 @@ S_PRERD: if (chain == 4'd0) begin
         rd_done_cnt_n = rd_done_cnt_n - 2'd1;
         if (rdq_n_n != 2'd0) begin
             opr_n = rdq0_n; rdq0_n = rdq1_n; rdq_n_n = rdq_n_n - 2'd1;
+                    // ...and the width tag pops out of the same slot
+                    opr_byte_n = rdq0_byte_n; rdq0_byte_n = rdq1_byte_n;
             opr_loaded_n = 1'b1;                              // §87.A
         end
         // F27 -- THE PRE-DECODE READ DOES NOT MAKE OPR "FRESH".  The loader
@@ -623,6 +633,8 @@ S_ROW: if (chain == 4'd0) begin
                 if (rd_done_cnt_n != 2'd0) rd_done_cnt_n = rd_done_cnt_n - 2'd1;
                 if (rdq_n_n != 2'd0) begin
                     opr_n = rdq0_n; rdq0_n = rdq1_n; rdq_n_n = rdq_n_n - 2'd1;
+                    // ...and the width tag pops out of the same slot
+                    opr_byte_n = rdq0_byte_n; rdq0_byte_n = rdq1_byte_n;
                     opr_loaded_n = 1'b1;                      // §87.A
                 end
             end
@@ -647,6 +659,8 @@ S_ROW: if (chain == 4'd0) begin
                 rd_done_cnt_n = rd_done_cnt_n - 2'd1;
             if (rdq_n_n != 2'd0) begin
                 opr_n = rdq0_n; rdq0_n = rdq1_n; rdq_n_n = rdq_n_n - 2'd1;
+                    // ...and the width tag pops out of the same slot
+                    opr_byte_n = rdq0_byte_n; rdq0_byte_n = rdq1_byte_n;
                 opr_fresh_n = 1'b1;
                 opr_loaded_n = 1'b1;                          // §87.A
             end
@@ -686,8 +700,16 @@ S_RLOOP: if (chain == 4'd0) begin
     if (!e_nopmv) begin
         v1 = it_val;
         bsw = 1'b0;
+        // The loop's result carries the width the loop RAN at.  It needs no
+        // latch: the tag the destination takes is `al_width_byte` itself, and
+        // `al_width_byte` is an OR that already contains whichever tag this
+        // write moves -- so the value is IDEMPOTENT across the iterations, and
+        // that is what `exec_impl.h`'s hoisted `loop_byte` is saying.
+        wb1 = al_width_byte;
         `include "v30u_eu_wd1.svh"
     end
+    // `alu_step` writes `m.tmpa` DIRECTLY (the multiply/divide low half) and
+    // does NOT touch its tag; neither does this.
     if (it_writes_tmpa) tmpa_n = it_tmpa;
     if (tmpa_n != tmpa) ea_residue_n = tmpa_n;
     if (tmpb_n != tmpb) ea_pair_valid_n = 1'b0;
@@ -752,6 +774,8 @@ S_TAIL_W: if (chain == 4'd0) begin
             if (rd_done_cnt_n != 2'd0) rd_done_cnt_n = rd_done_cnt_n - 2'd1;
             if (rdq_n_n != 2'd0) begin
                 opr_n = rdq0_n; rdq0_n = rdq1_n; rdq_n_n = rdq_n_n - 2'd1;
+                    // ...and the width tag pops out of the same slot
+                    opr_byte_n = rdq0_byte_n; rdq0_byte_n = rdq1_byte_n;
                 opr_loaded_n = 1'b1;                          // §87.A
             end
         end
@@ -858,7 +882,7 @@ S_IRQ_D: if (chain == 4'd0) begin
     opc_base_n = 5'd0; opc_from_modrm_n = 1'b0; modrm_reg_n = 3'd0; opc_reg_n = 8'd0;
     rep_test_n = TEST_NONE; rep_pol_n = 1'b0; xop_n = 4'd0;
     op8_n = 1'b0; imm8_n = 1'b0; bus_word_n = 1'b0; opc8080_n = 1'b0;
-    al_op_n = A_ADD; al_tmp_n = 2'd0; al_byte_n = 1'b0;
+    al_op_n = A_ADD; al_tmp_n = 2'd0;
     al_eaconst_n = 1'b0; al_eaval_n = 16'd0;
     al_adjust_n = 2'd0; al_adjtmp_n = 2'd0; al_bitarm_n = 1'b0; al_bitn_n = 4'd0;
     al_spent_n = 1'b0;
@@ -867,6 +891,7 @@ S_IRQ_D: if (chain == 4'd0) begin
     pend_byte_n = 1'b0; pend_io_n = 1'b0; opr_fresh_n = 1'b0;
     opr_loaded_n = 1'b0;                                      // §87.A
     rdq0_n = 16'd0; rdq1_n = 16'd0; rdq_n_n = 2'd0;
+    rdq0_byte_n = 1'b0; rdq1_byte_n = 1'b0;   // ...and their width tags
     ld_ext_n = 1'b0; ld_hasrm_n = 1'b0; ld_grpd_n = 1'b0; ld_preread_n = 1'b0;
     ld_rm_n = 8'd0; ld_disp_n = 16'd0;
     ending_n = 1'b0; rowq_n = 2'd0; row_posted_n = 1'b0; row_paired_n = 1'b0;
