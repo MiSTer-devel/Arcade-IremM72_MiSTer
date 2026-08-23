@@ -29,7 +29,6 @@ module emu
 ///////// Default values for ports not used in this core /////////
 
 assign ADC_BUS  = 'Z;
-assign USER_OUT = '1;
 assign {UART_RTS, UART_TXD, UART_DTR} = 0;
 assign {SD_SCK, SD_MOSI, SD_CS} = 'Z;
 assign CLK_VIDEO = CLK_32M;
@@ -100,6 +99,7 @@ localparam CONF_STR = {
     "-;",
     "O[7],OSD Pause,Off,On;",
     "O[25],Autosave Hiscores,Off,On;",
+    "O[26],DB15 SNAC,Off,On;",
     "-;",
     "O[42:41],Savestate Slot,1,2,3,4;",
     "O[40],Autoincrement Slot,Off,On;",
@@ -155,7 +155,10 @@ wire  [7:0] ioctl_dout;
 wire  [7:0] ioctl_din;
 wire        ioctl_wait;
 
-wire [15:0] joystick_0, joystick_1;
+wire [15:0] joyusb_0, joyusb_1;
+wire [15:0] db15_j1, db15_j2;
+wire [15:0] joystick_0 = joyusb_0 | db15_j1;
+wire [15:0] joystick_1 = joyusb_1 | db15_j2;
 wire [15:0] joy = joystick_0 | joystick_1;
 
 wire [21:0] gamma_bus;
@@ -202,8 +205,8 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
     .ioctl_index(ioctl_index),
     .ioctl_wait(ioctl_wait),
 
-    .joystick_0(joystick_0),
-    .joystick_1(joystick_1),
+    .joystick_0(joyusb_0),
+    .joystick_1(joyusb_1),
     .ps2_key(ps2_key)
 );
 
@@ -475,6 +478,32 @@ end
 
 //////////////////  Arcade Buttons/Interfaces   ///////////////////////////
 
+// DB15 SNAC on the user port: LOAD on USER_OUT[0], CLK on USER_OUT[1],
+// serial data in on USER_IN[5].  Released (all high) when disabled.
+wire db15_en = status[26];
+wire db15_clk, db15_load;
+wire [15:0] db15_raw1, db15_raw2;
+
+assign USER_OUT = db15_en ? {5'b11111, db15_clk, db15_load} : 7'h7f;
+
+joy_db15 joy_db15
+(
+    .clk(clk_sys),
+    .rst(~db15_en),
+
+    .JOY_CLK(db15_clk),
+    .JOY_LOAD(db15_load),
+    .JOY_DATA(USER_IN[5]),
+
+    .joystick1(db15_raw1),
+    .joystick2(db15_raw2)
+);
+
+// Directions and buttons land straight on the MiSTer bit positions.  Start
+// and Select are wired explicitly into the start/coin signals below.
+assign db15_j1 = db15_en ? {8'd0, db15_raw1[7:0]} : 16'd0;
+assign db15_j2 = db15_en ? {8'd0, db15_raw2[7:0]} : 16'd0;
+
 //Player 1
 wire m_up1      = btn_up      | joystick_0[3];
 wire m_down1    = btn_down    | joystick_0[2];
@@ -496,10 +525,10 @@ wire m_btnx2    = btn_x       | joystick_1[6];
 wire m_btny2    = btn_y       | joystick_1[7];
 
 //Start/coin
-wire m_start1   = btn_1p_start | joy[8];
-wire m_start2   = btn_2p_start | joy[12];
-wire m_coin1    = btn_coin1    | joy[9];
-wire m_coin2    = btn_coin2;
+wire m_start1   = btn_1p_start | joy[8]  | (db15_en & db15_raw1[10]);
+wire m_start2   = btn_2p_start | joy[12] | (db15_en & db15_raw2[10]);
+wire m_coin1    = btn_coin1    | joy[9]  | (db15_en & db15_raw1[11]);
+wire m_coin2    = btn_coin2              | (db15_en & db15_raw2[11]);
 wire m_pause    = btn_pause    | joy[10];
 
 //////////////////////////////////////////////////////////////////
