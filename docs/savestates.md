@@ -66,11 +66,28 @@ Both are wired to the ssbus via `auto_save_adaptor2` in `sound.sv` and are
 compiled in place of the plain cores under `USE_AUTO_SS` (see `files.qip` /
 `sim/Makefile`). The jt51 ROMs (`sinetable`, `explut`, `lfo_lut`) are
 `initial`-populated constants and are correctly excluded (the generator only
-captures registers written with `<=` in an `always` block). Note: `jt51_sh.v`
-was restructured from a genvar-`generate` shift to a module-scope procedural
-`for` so the generator injects its read/restore logic once at module scope
-instead of replicating it per genvar bit (which produced a multidriven
-`auto_ss_data_out`); this matches the `jt12_sh` style the generator handles.
+captures registers written with `<=` in an `always` block).
+
+### Local patches that must survive a jt51 update
+
+`rtl/jt51/` is a vendored snapshot of jotego/jt51 (currently upstream `985a573`,
+2026-07-29). Two edits are carried on top and are commented as such in the files
+themselves - re-apply both after any re-import, or the generator output changes
+silently:
+
+* `jt51_sh.v` - the clocked shift moved out of the genvar `generate` to module
+  scope, so the generator injects its read/restore logic once instead of per
+  genvar bit (which produced a multidriven `auto_ss_data_out` and crippled sim
+  speed). Matches the `jt12_sh` style the generator handles.
+* `jt51.v` - the unused ``define YM_TIMER_CTRL 8'h14` is deleted.
+  `verible-verilog-syntax` fails to parse it, and the failure is *silent*: the
+  generator skips `jt51.v` and emits a plausible-looking but incomplete file.
+  Always check the generator log for `syntax error` before trusting the output.
+
+Regenerating changes the JT51 section's entry count (88 -> 94 on the 2026-07
+update), which invalidates every previously captured `.m72state`. Sanity-check
+the flow by regenerating from unchanged sources first - it is deterministic and
+should reproduce the checked-in file byte for byte.
 
 ## FPGA (Arcade-IremM72.sv)
 

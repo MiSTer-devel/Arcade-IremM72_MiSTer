@@ -45,7 +45,7 @@ module jt51_timer #(
       endcase
     end else  /*if(cen)*/ begin
       if (clr_flag) flag <= 1'b0;
-      else if (overflow) flag <= 1'b1;
+      else if (cen && zero && load && overflow) flag <= 1'b1;
     end
 
   always @(*) begin
@@ -81,7 +81,7 @@ module jt51_timer #(
       if (rst) begin
         free_cnt <= 4'd0;
       end else if (cen && zero) begin
-        free_cnt <= free_cnt + 4'd1;
+        free_cnt <= free_next;
       end
     end
     if (auto_ss_wr && device_match) begin
@@ -1678,21 +1678,25 @@ module jt51_sh #(
 
   reg     [stages-1:0] bits[width-1:0];
 
-  // Module-scope clocked shift (functionally identical to the original
-  // per-genvar always).  Kept at module scope - not inside the generate loop -
-  // so the state_module.py savestate generator injects its restore-write and
-  // read-mux once at module scope instead of replicating them per genvar bit
-  // (which produced a multidriven auto_ss_data_out and crippled sim speed).
-  // Mirrors the jt12_sh structure the generator is known to handle.
+  // Local change (kept across jt51 updates): the clocked shift lives at module
+  // scope rather than inside the genvar loop.  Functionally identical to the
+  // upstream per-genvar always, but it lets util/state_module.py inject its
+  // restore-write and read-mux once at module scope instead of replicating them
+  // per genvar bit, which produced a multidriven auto_ss_data_out and crippled
+  // sim speed.  Mirrors the jt12_sh structure the generator is known to handle.
   integer              k;
-  always @(posedge clk, posedge rst) begin
-    if (rst) for (k = 0; k < width; k = k + 1) bits[k] <= {stages{rstval}};
-    else if (auto_ss_wr && device_match) begin
+  always @(posedge clk) begin
+    if (cen) begin
+      for (k = 0; k < width; k = k + 1) bits[k] <= {bits[k][stages-2:0], din[k]};
+    end
+    if (auto_ss_wr && device_match) begin
       if (auto_ss_state_idx < (width)) begin
         bits[auto_ss_state_idx] <= auto_ss_data_in[stages-1:0];
       end
-    end else if (cen) for (k = 0; k < width; k = k + 1) bits[k] <= {bits[k][stages-2:0], din[k]};
+    end
   end
+
+
   always_comb begin
     auto_ss_data_out = 32'h0;
     auto_ss_ack      = 1'b0;
@@ -1709,7 +1713,7 @@ module jt51_sh #(
   genvar i;
   generate
     for (i = 0; i < width; i = i + 1) begin : bit_shifter
-      assign drop[i] = bits[i][stages-1];
+      assign drop[i] = rst ? rstval[0] : bits[i][stages-1];
     end
   endgenerate
 
@@ -1721,7 +1725,7 @@ endmodule
 module jt51_pg (
     input               rst,
     input               clk,
-    input               cen  /* direct_enable */,
+    input               cen,
     input               zero,
     // Channel frequency
     input        [ 6:0] kc_I,
@@ -2278,7 +2282,7 @@ module jt51_eg (
   // remember: { log_msb, pow_addr } <= log_val[11:0] + { tl, 5'd0 } + { eg, 2'd0 };
 
   reg [ 1:0] eg_cnt_base;
-  reg [14:0] eg_cnt  /*verilator public*/;
+  reg [14:0] eg_cnt;
 
   reg [ 9:0] am_final_VII;
 
@@ -2353,7 +2357,7 @@ module jt51_eg (
         endcase
     end
     // a rate_IV of zero keeps the level still
-    step_V = rate_V[5:1] == 5'd0 ? 1'b0 : step_idx[cnt_V];
+    step_V = rate_V[5:2] == 4'd0 ? 1'b0 : step_idx[cnt_V];
   end
 
 
@@ -3681,9 +3685,9 @@ endmodule
 ///////////////////////////////////////////
 // MODULE jt51_exp2lin
 module jt51_exp2lin (
-    output reg signed [15:0] lin,
     input  signed     [ 9:0] man,
-    input             [ 2:0] exp
+    input             [ 2:0] exp,
+    output reg signed [15:0] lin
 );
 
   always @(*) begin
@@ -3850,9 +3854,9 @@ module jt51_acc (
 
   wire ren = rl_I[1];
   wire len = rl_I[0];
-  reg signed [16:0] pre_left, pre_right;
+  reg signed [18:0] pre_left, pre_right;
   wire signed [15:0] total;
-  wire signed [16:0] total_ex = {total[15], total};
+  wire signed [18:0] total_ex = {{3{total[15]}}, total};
 
   reg                sum_all;
 
@@ -3861,9 +3865,10 @@ module jt51_acc (
   //wire rst_sum = m1_enters;
   //wire rst_sum = m2_enters;
 
+  // 16-bit clamp
   function signed [15:0] lim16;
-    input signed [16:0] din;
-    lim16 = !din[16] && din[15] ? 16'h7fff : (din[16] && !din[15] ? 16'h8000 : din[15:0]);
+    input signed [18:0] din;
+    lim16 = din[18:16] == {3{din[15]}} ? din[15:0] : {din[18], {15{~din[18]}}};
   endfunction
 
 
@@ -3875,11 +3880,11 @@ module jt51_acc (
         if (rst_sum) begin
           sum_all <= 1'b1;
           if (!sum_all) begin
-            pre_right <= ren ? total_ex : 17'd0;
-            pre_left  <= len ? total_ex : 17'd0;
+            pre_right <= ren ? total_ex : 19'd0;
+            pre_left  <= len ? total_ex : 19'd0;
           end else begin
-            pre_right <= pre_right + (ren ? total_ex : 17'd0);
-            pre_left  <= pre_left + (len ? total_ex : 17'd0);
+            pre_right <= pre_right + (ren ? total_ex : 19'd0);
+            pre_left  <= pre_left + (len ? total_ex : 19'd0);
           end
         end
         if (c1_enters) begin
@@ -3892,10 +3897,10 @@ module jt51_acc (
     if (auto_ss_wr && device_match) begin
       case (auto_ss_state_idx)
         0: begin
-          pre_left <= auto_ss_data_in[16:0];
+          pre_left <= auto_ss_data_in[18:0];
         end
         1: begin
-          pre_right <= auto_ss_data_in[16:0];
+          pre_right <= auto_ss_data_in[18:0];
         end
         2: begin
           xleft  <= auto_ss_data_in[15:0];
@@ -3917,11 +3922,11 @@ module jt51_acc (
     if (auto_ss_rd && device_match) begin
       case (auto_ss_state_idx)
         0: begin
-          auto_ss_local_data_out[17-1:0] = pre_left;
+          auto_ss_local_data_out[19-1:0] = pre_left;
           auto_ss_local_ack              = 1'b1;
         end
         1: begin
-          auto_ss_local_data_out[17-1:0] = pre_right;
+          auto_ss_local_data_out[19-1:0] = pre_right;
           auto_ss_local_ack              = 1'b1;
         end
         2: begin
@@ -3980,27 +3985,27 @@ module jt51_acc (
   wire [2:0] left_exp, right_exp;
 
   jt51_exp2lin left_reconstruct (
-      .lin(left),
       .man(left_man),
-      .exp(left_exp)
+      .exp(left_exp),
+      .lin(left)
   );
 
   jt51_exp2lin right_reconstruct (
-      .lin(right),
       .man(right_man),
-      .exp(right_exp)
+      .exp(right_exp),
+      .lin(right)
   );
 
   jt51_lin2exp left2exp (
-      .lin(xleft),
       .man(left_man),
-      .exp(left_exp)
+      .exp(left_exp),
+      .lin(xleft)
   );
 
   jt51_lin2exp right2exp (
-      .lin(xright),
       .man(right_man),
-      .exp(right_exp)
+      .exp(right_exp),
+      .lin(xright)
   );
 
 
@@ -4307,28 +4312,27 @@ endmodule
 
 
 ///////////////////////////////////////////
-// MODULE jt51_csr_ch
-module jt51_csr_ch (
+// MODULE jt51_reg_ch
+module jt51_reg_ch (
     input       rst,
     input       clk,
     input       cen,
     input [7:0] din,
 
-    input up_rl_ch,
-    input up_fb_ch,
-    input up_con_ch,
-    input up_kc_ch,
-    input up_kf_ch,
-    input up_ams_ch,
-    input up_pms_ch,
+    input [2:0] up_ch,
+    input       up_rl,
+    input       up_kc,
+    input       up_kf,
+    input       up_pms,
 
-    output       [ 1:0] rl,
-    output       [ 2:0] fb,
-    output       [ 2:0] con,
-    output       [ 6:0] kc,
-    output       [ 5:0] kf,
-    output       [ 1:0] ams,
-    output       [ 2:0] pms,
+    input        [ 2:0] ch,                       // next active channel
+    output reg   [ 1:0] rl,
+    output reg   [ 2:0] fb_II,
+    output reg   [ 2:0] con,
+    output reg   [ 6:0] kc,
+    output reg   [ 5:0] kf,
+    output reg   [ 1:0] ams_VII,
+    output reg   [ 2:0] pms,
     input               auto_ss_rd,
     input               auto_ss_wr,
     input        [31:0] auto_ss_data_in,
@@ -4339,60 +4343,149 @@ module jt51_csr_ch (
     output logic        auto_ss_ack
 
 );
-  assign auto_ss_ack      = auto_ss_u_regop_ack;
-
-  assign auto_ss_data_out = auto_ss_u_regop_data_out;
-
-  wire        auto_ss_u_regop_ack;
-
-  wire [31:0] auto_ss_u_regop_data_out;
-
-  wire        device_match = (auto_ss_device_idx == auto_ss_base_device_idx);
+  wire device_match = (auto_ss_device_idx == auto_ss_base_device_idx);
 
   genvar auto_ss_idx;
 
 
-  wire [1:0] rl_in = din[7:6];
-  wire [2:0] fb_in = din[5:3];
-  wire [2:0] con_in = din[2:0];
-  wire [6:0] kc_in = din[6:0];
-  wire [5:0] kf_in = din[7:2];
-  wire [1:0] ams_in = din[1:0];
-  wire [2:0] pms_in = din[6:4];
+  wire    [1:0] rl_in = din[7:6];
+  wire    [2:0] fb_in = din[5:3];
+  wire    [2:0] con_in = din[2:0];
+  wire    [6:0] kc_in = din[6:0];
+  wire    [5:0] kf_in = din[7:2];
+  wire    [1:0] ams_in = din[1:0];
+  wire    [2:0] pms_in = din[6:4];
 
-  wire [25:0] reg_in = {
-    up_rl_ch ? rl_in : rl,
-    up_fb_ch ? fb_in : fb,
-    up_con_ch ? con_in : con,
-    up_kc_ch ? kc_in : kc,
-    up_kf_ch ? kf_in : kf,
-    up_ams_ch ? ams_in : ams,
-    up_pms_ch ? pms_in : pms
-  };
+  reg     [1:0] reg_rl            [0:7];
+  reg     [2:0] reg_fb            [0:7];
+  reg     [2:0] reg_con           [0:7];
+  reg     [6:0] reg_kc            [0:7];
+  reg     [5:0] reg_kf            [0:7];
+  reg     [1:0] reg_ams           [0:7];
+  reg     [2:0] reg_pms           [0:7];
 
-  wire [25:0] reg_out;
+  integer       i;
 
-  assign {rl, fb, con, kc, kf, ams, pms} = reg_out;
+  always @(posedge clk) begin
+    if (cen) begin
+      rl      <= reg_rl[ch];
+      fb_II   <= reg_fb[ch-3'd1];
+      con     <= reg_con[ch];
+      kc      <= reg_kc[ch];
+      kf      <= reg_kf[ch];
+      ams_VII <= reg_ams[ch-3'd6];
+      pms     <= reg_pms[ch];
+    end
+    if (auto_ss_wr && device_match) begin
+      case (auto_ss_state_idx)
+        0: begin
+          kc      <= auto_ss_data_in[6:0];
+          kf      <= auto_ss_data_in[12:7];
+          con     <= auto_ss_data_in[15:13];
+          fb_II   <= auto_ss_data_in[18:16];
+          pms     <= auto_ss_data_in[21:19];
+          ams_VII <= auto_ss_data_in[23:22];
+          rl      <= auto_ss_data_in[25:24];
+        end
+        default: begin
+        end
+      endcase
+    end
+  end
 
-  jt51_sh #(
-      .width (26),
-      .stages(8)
-  ) u_regop (
-      .rst                    (rst),
-      .clk                    (clk),
-      .cen                    (cen),
-      .din                    (reg_in),
-      .drop                   (reg_out),
-      .auto_ss_rd             (auto_ss_rd),
-      .auto_ss_wr             (auto_ss_wr),
-      .auto_ss_data_in        (auto_ss_data_in),
-      .auto_ss_device_idx     (auto_ss_device_idx),
-      .auto_ss_state_idx      (auto_ss_state_idx),
-      .auto_ss_base_device_idx(auto_ss_base_device_idx + 1),
-      .auto_ss_data_out       (auto_ss_u_regop_data_out),
-      .auto_ss_ack            (auto_ss_u_regop_ack)
 
-  );
+
+  always @(posedge clk, posedge rst) begin
+    if (rst)
+      for (i = 0; i < 8; i = i + 1) begin
+        reg_rl[i]  <= 0;
+        reg_fb[i]  <= 0;
+        reg_con[i] <= 0;
+        reg_kc[i]  <= 0;
+        reg_kf[i]  <= 0;
+        reg_ams[i] <= 0;
+        reg_pms[i] <= 0;
+      end
+    else if (auto_ss_wr && device_match) begin
+      if (auto_ss_state_idx >= (1) && auto_ss_state_idx < (9)) begin
+        reg_ams[auto_ss_state_idx-1] <= auto_ss_data_in[1:0];
+      end
+      if (auto_ss_state_idx >= (9) && auto_ss_state_idx < (17)) begin
+        reg_con[auto_ss_state_idx-9] <= auto_ss_data_in[2:0];
+      end
+      if (auto_ss_state_idx >= (17) && auto_ss_state_idx < (25)) begin
+        reg_fb[auto_ss_state_idx-17] <= auto_ss_data_in[2:0];
+      end
+      if (auto_ss_state_idx >= (25) && auto_ss_state_idx < (33)) begin
+        reg_kc[auto_ss_state_idx-25] <= auto_ss_data_in[6:0];
+      end
+      if (auto_ss_state_idx >= (33) && auto_ss_state_idx < (41)) begin
+        reg_kf[auto_ss_state_idx-33] <= auto_ss_data_in[5:0];
+      end
+      if (auto_ss_state_idx >= (41) && auto_ss_state_idx < (49)) begin
+        reg_pms[auto_ss_state_idx-41] <= auto_ss_data_in[2:0];
+      end
+      if (auto_ss_state_idx >= (49) && auto_ss_state_idx < (57)) begin
+        reg_rl[auto_ss_state_idx-49] <= auto_ss_data_in[1:0];
+      end
+    end else begin
+      i = 0;  // prevents latch warning in Quartus
+      if (up_rl) begin
+        reg_rl[up_ch]  <= rl_in;
+        reg_fb[up_ch]  <= fb_in;
+        reg_con[up_ch] <= con_in;
+      end
+      if (up_kc) reg_kc[up_ch] <= kc_in;
+      if (up_kf) reg_kf[up_ch] <= kf_in;
+      if (up_pms) begin
+        reg_ams[up_ch] <= ams_in;
+        reg_pms[up_ch] <= pms_in;
+      end
+    end
+  end
+  always_comb begin
+    auto_ss_data_out = 32'h0;
+    auto_ss_ack      = 1'b0;
+    if (auto_ss_rd && device_match) begin
+      case (auto_ss_state_idx)
+        0: begin
+          auto_ss_data_out[25:0] = {rl, ams_VII, pms, fb_II, con, kf, kc};
+          auto_ss_ack            = 1'b1;
+        end
+        default: begin
+          if (auto_ss_state_idx >= (1) && auto_ss_state_idx < (9)) begin
+            auto_ss_data_out[2-1:0] = reg_ams[auto_ss_state_idx-1];
+            auto_ss_ack             = 1'b1;
+          end
+          if (auto_ss_state_idx >= (9) && auto_ss_state_idx < (17)) begin
+            auto_ss_data_out[3-1:0] = reg_con[auto_ss_state_idx-9];
+            auto_ss_ack             = 1'b1;
+          end
+          if (auto_ss_state_idx >= (17) && auto_ss_state_idx < (25)) begin
+            auto_ss_data_out[3-1:0] = reg_fb[auto_ss_state_idx-17];
+            auto_ss_ack             = 1'b1;
+          end
+          if (auto_ss_state_idx >= (25) && auto_ss_state_idx < (33)) begin
+            auto_ss_data_out[7-1:0] = reg_kc[auto_ss_state_idx-25];
+            auto_ss_ack             = 1'b1;
+          end
+          if (auto_ss_state_idx >= (33) && auto_ss_state_idx < (41)) begin
+            auto_ss_data_out[6-1:0] = reg_kf[auto_ss_state_idx-33];
+            auto_ss_ack             = 1'b1;
+          end
+          if (auto_ss_state_idx >= (41) && auto_ss_state_idx < (49)) begin
+            auto_ss_data_out[3-1:0] = reg_pms[auto_ss_state_idx-41];
+            auto_ss_ack             = 1'b1;
+          end
+          if (auto_ss_state_idx >= (49) && auto_ss_state_idx < (57)) begin
+            auto_ss_data_out[2-1:0] = reg_rl[auto_ss_state_idx-49];
+            auto_ss_ack             = 1'b1;
+          end
+        end
+      endcase
+    end
+  end
+
 
 
 endmodule
@@ -4401,15 +4494,11 @@ endmodule
 ///////////////////////////////////////////
 // MODULE jt51_reg
 module jt51_reg (
-    input       rst,
-    input       clk,
-    input       cen,  // P1
-    input [7:0] din,
+    input rst,
+    input clk,
+    input cen,  // P1
 
-    input       up_rl,
-    input       up_kc,
-    input       up_kf,
-    input       up_pms,
+    // operator updates
     input       up_dt1,
     input       up_tl,
     input       up_ks,
@@ -4419,6 +4508,14 @@ module jt51_reg (
     input       up_keyon,
     input [1:0] op,        // operator to update
     input [2:0] ch,        // channel to update
+    input [7:0] op_din,
+    // channel updates
+    input       up_rl,
+    input       up_kc,
+    input       up_kf,
+    input       up_pms,
+    input [2:0] ch_sel,    // channel updates
+    input [7:0] ch_din,
 
     input csm,
     input overflow_A,
@@ -4555,15 +4652,6 @@ module jt51_reg (
   wire       update_op_VI = cur == req_VI;
   wire       update_op_VII = cur == req_VII;
 
-  wire       up_rl_ch = up_rl & update_op_I;
-  wire       up_fb_ch = up_rl & update_op_II;
-  wire       up_con_ch = up_rl & update_op_I;
-
-  wire       up_kc_ch = up_kc & update_op_I;
-  wire       up_kf_ch = up_kf & update_op_I;
-  wire       up_pms_ch = up_pms & update_op_I;
-  wire       up_ams_ch = up_pms & update_op_VII;
-
   wire       up_dt1_op = up_dt1 & update_op_II;  // DT1, MUL
   wire       up_mul_op = up_dt1 & update_op_VI;  // DT1, MUL
   wire       up_tl_op = up_tl & update_op_VII;
@@ -4618,8 +4706,8 @@ module jt51_reg (
 
 
   wire [2:0] cur_ch = cur[2:0];
-  wire [3:0] keyon_op = din[6:3];
-  wire [2:0] keyon_ch = din[2:0];
+  wire [3:0] keyon_op = op_din[6:3];
+  wire [2:0] keyon_ch = op_din[2:0];
 
   jt51_kon u_kon (
       .rst                    (rst),
@@ -4662,8 +4750,8 @@ module jt51_reg (
   jt51_csr_op u_csr_op (
       .rst(rst),
       .clk(clk),
-      .cen(cen),  // P1
-      .din(din),
+      .cen(cen),    // P1
+      .din(op_din),
 
       .up_dt1_op  (up_dt1_op),
       .up_mul_op  (up_mul_op),
@@ -4699,26 +4787,25 @@ module jt51_reg (
 
   );
 
-  jt51_csr_ch u_csr_ch (
+  jt51_reg_ch u_csr_ch (
       .rst(rst),
       .clk(clk),
       .cen(cen),
-      .din(din),
+      .din(ch_din),
 
-      .up_rl_ch (up_rl_ch),
-      .up_fb_ch (up_fb_ch),
-      .up_con_ch(up_con_ch),
-      .up_kc_ch (up_kc_ch),
-      .up_kf_ch (up_kf_ch),
-      .up_ams_ch(up_ams_ch),
-      .up_pms_ch(up_pms_ch),
+      .up_ch (ch_sel),
+      .up_rl (up_rl),
+      .up_kc (up_kc),
+      .up_kf (up_kf),
+      .up_pms(up_pms),
 
+      .ch                     (next[2:0]),
       .rl                     (rl_I),
-      .fb                     (fb_II),
+      .fb_II                  (fb_II),
       .con                    (con_I),
       .kc                     (kc_I),
       .kf                     (kf_I),
-      .ams                    (ams_VII),
+      .ams_VII                (ams_VII),
       .pms                    (pms_I),
       .auto_ss_rd             (auto_ss_rd),
       .auto_ss_wr             (auto_ss_wr),
@@ -4842,7 +4929,7 @@ module jt51_mmr (
   genvar auto_ss_idx;
 
 
-  reg [7:0] selected_register, din_copy;
+  reg [7:0] reg_sel, op_din, ch_din;
 
   reg up_rl, up_kc, up_kf, up_pms, up_dt1, up_tl, up_ks, up_dt2, up_d1l, up_keyon, up_amsen;
   reg [1:0] up_op;
@@ -4867,7 +4954,7 @@ module jt51_mmr (
 
   always @(posedge clk, posedge rst) begin : memory_mapped_registers
     if (rst) begin
-      selected_register <= 8'h0;
+      reg_sel <= 8'h0;
       { up_rl, up_kc, up_kf, up_pms, up_dt1, up_tl,
                 up_ks, up_amsen, up_dt2, up_d1l, up_keyon } <= 11'd0;
 
@@ -4884,63 +4971,65 @@ module jt51_mmr (
       lfo_w <= 2'd0;
       {ct2, ct1} <= 2'd0;
       csm <= 1'b0;
-      din_copy <= 8'd0;
+      op_din <= 8'd0;
       test_mode <= 8'd0;
 
     end else if (auto_ss_wr && device_match) begin
       case (auto_ss_state_idx)
         0: begin
           value_A  <= auto_ss_data_in[9:0];
-          din_copy <= auto_ss_data_in[17:10];
+          ch_din   <= auto_ss_data_in[17:10];
           lfo_freq <= auto_ss_data_in[25:18];
         end
         1: begin
-          selected_register <= auto_ss_data_in[7:0];
-          test_mode         <= auto_ss_data_in[15:8];
-          value_B           <= auto_ss_data_in[23:16];
-          lfo_amd           <= auto_ss_data_in[30:24];
+          op_din    <= auto_ss_data_in[7:0];
+          reg_sel   <= auto_ss_data_in[15:8];
+          test_mode <= auto_ss_data_in[23:16];
+          value_B   <= auto_ss_data_in[31:24];
         end
         2: begin
-          lfo_pmd    <= auto_ss_data_in[6:0];
-          nfrq       <= auto_ss_data_in[11:7];
-          up_ch      <= auto_ss_data_in[19:17];
-          lfo_w      <= auto_ss_data_in[21:20];
-          up_op      <= auto_ss_data_in[23:22];
-          clr_flag_B <= auto_ss_data_in[24];
-          csm        <= auto_ss_data_in[25];
-          ct2        <= auto_ss_data_in[26];
-          lfo_up     <= auto_ss_data_in[27];
-          ne         <= auto_ss_data_in[28];
-          up_amsen   <= auto_ss_data_in[29];
-          up_d1l     <= auto_ss_data_in[30];
-          up_dt1     <= auto_ss_data_in[31];
+          lfo_amd    <= auto_ss_data_in[6:0];
+          lfo_pmd    <= auto_ss_data_in[13:7];
+          nfrq       <= auto_ss_data_in[18:14];
+          up_ch      <= auto_ss_data_in[26:24];
+          lfo_w      <= auto_ss_data_in[28:27];
+          up_op      <= auto_ss_data_in[30:29];
+          clr_flag_A <= auto_ss_data_in[31];
         end
         3: begin
-          up_dt2   <= auto_ss_data_in[0];
-          up_kc    <= auto_ss_data_in[1];
-          up_keyon <= auto_ss_data_in[2];
-          up_kf    <= auto_ss_data_in[3];
-          up_ks    <= auto_ss_data_in[4];
-          up_pms   <= auto_ss_data_in[5];
-          up_rl    <= auto_ss_data_in[6];
-          up_tl    <= auto_ss_data_in[7];
+          clr_flag_B   <= auto_ss_data_in[0];
+          csm          <= auto_ss_data_in[1];
+          ct2          <= auto_ss_data_in[2];
+          enable_irq_B <= auto_ss_data_in[3];
+          lfo_up       <= auto_ss_data_in[4];
+          ne           <= auto_ss_data_in[5];
+          up_amsen     <= auto_ss_data_in[6];
+          up_d1l       <= auto_ss_data_in[7];
+          up_dt1       <= auto_ss_data_in[8];
+          up_dt2       <= auto_ss_data_in[9];
+          up_kc        <= auto_ss_data_in[10];
+          up_keyon     <= auto_ss_data_in[11];
+          up_kf        <= auto_ss_data_in[12];
+          up_ks        <= auto_ss_data_in[13];
+          up_pms       <= auto_ss_data_in[14];
+          up_rl        <= auto_ss_data_in[15];
+          up_tl        <= auto_ss_data_in[16];
         end
         default: begin
         end
       endcase
     end else begin
+      clr_flag_A <= 1'b0;
+      clr_flag_B <= 1'b0;
       // WRITE IN REGISTERS
       if (write) begin
-        if (!a0) selected_register <= din;
+        up_rl  <= 0;  // channel data is written in one clock cycle
+        up_kc  <= 0;
+        up_kf  <= 0;
+        up_pms <= 0;
+        if (!a0) reg_sel <= din;
         else begin
-          din_copy <= din;
-          up_op    <= selected_register[4:3];  // operator to update
-          up_ch    <= selected_register[2:0];  // channel to update
-          up_rl    <= 1'b0;
-          up_kc    <= 1'b0;
-          up_kf    <= 1'b0;
-          up_pms   <= 1'b0;
-          up_dt1   <= 1'b0;
+          up_dt1   <= 1'b0;  // operator data is updated via CSR
           up_tl    <= 1'b0;
           up_ks    <= 1'b0;
           up_amsen <= 1'b0;
@@ -4948,19 +5037,23 @@ module jt51_mmr (
           up_d1l   <= 1'b0;
           up_keyon <= 1'b0;
           // Global registers
-          if (selected_register < 8'h20) begin
-            case (selected_register)
+          if (reg_sel < 8'h20) begin
+            case (reg_sel)
               // registros especiales
               REG_TEST: test_mode <= din;  // regardless of din
 
-              REG_KON:   up_keyon <= 1'b1;
+              REG_KON: begin
+                up_keyon <= 1'b1;
+                op_din   <= din;
+              end
               REG_NOISE: {ne, nfrq} <= {din[7], din[4:0]};
               REG_CLKA1: value_A[9:2] <= din;
               REG_CLKA2: value_A[1:0] <= din[1:0];
               REG_CLKB:  value_B <= din;
               REG_TIMER: begin
-                csm                                                                  <= din[7];
-                {clr_flag_B, clr_flag_A, enable_irq_B, enable_irq_A, load_B, load_A} <= din[5:0];
+                csm                                          <= din[7];
+                {clr_flag_B, clr_flag_A}                     <= din[5:4];
+                {enable_irq_B, enable_irq_A, load_B, load_A} <= din[3:0];
               end
               REG_LFRQ: begin
                 lfo_freq <= din;
@@ -4977,19 +5070,21 @@ module jt51_mmr (
 
               default: ;
             endcase
-          end else
-          // channel registers
-          if (selected_register < 8'h40) begin
-            case (selected_register[4:3])
+          end else if (reg_sel < 8'h40) begin
+            // channel registers
+            ch_din <= din;
+            case (reg_sel[4:3])
               2'h0: up_rl <= 1'b1;
               2'h1: up_kc <= 1'b1;
               2'h2: up_kf <= 1'b1;
               2'h3: up_pms <= 1'b1;
             endcase
-          end else
-          // operator registers
-          begin
-            case (selected_register[7:5])
+          end else begin
+            // operator registers
+            up_op  <= reg_sel[4:3];  // operator to update
+            up_ch  <= reg_sel[2:0];  // channel to update
+            op_din <= din;
+            case (reg_sel[7:5])
               3'h2:    up_dt1 <= 1'b1;
               3'h3:    up_tl <= 1'b1;
               3'h4:    up_ks <= 1'b1;
@@ -5009,75 +5104,68 @@ module jt51_mmr (
     end
   end
 
-  reg [4:0] busy_cnt;  // busy lasts for 32 synth clock cycles
-  reg       old_write;
+  reg  [4:0] busy_cnt;  // busy lasts for 32 synth clock cycles
+  wire [5:0] nx_busy = {1'd0, busy_cnt} + {5'd0, busy};
 
-  always @(posedge clk) begin
-
+  always @(posedge clk, posedge rst) begin
     if (rst) begin
-      busy     <= 1'b0;
-      busy_cnt <= 5'd0;
-    end else begin
-      old_write <= write;
-      if (!old_write && write && a0) begin  // only set for data writes
-        busy     <= 1'b1;
-        busy_cnt <= 5'd0;
-      end else if (cen) begin
-        if (busy_cnt == 5'd31) busy <= 1'b0;
-        busy_cnt <= busy_cnt + 5'd1;
-      end
-    end
-    if (auto_ss_wr && device_match) begin
+      busy_cnt <= 0;
+      busy     <= 0;
+    end else if (auto_ss_wr && device_match) begin
       case (auto_ss_state_idx)
         2: begin
-          busy_cnt <= auto_ss_data_in[16:12];
+          busy_cnt <= auto_ss_data_in[23:19];
         end
         3: begin
-          busy      <= auto_ss_data_in[8];
-          old_write <= auto_ss_data_in[9];
+          busy <= auto_ss_data_in[17];
         end
         default: begin
         end
       endcase
+    end else if (cen) begin
+      busy     <= write & a0 | (busy & ~nx_busy[5]);
+      busy_cnt <= nx_busy[4:0];
     end
   end
-
-
   always_comb begin
     auto_ss_local_data_out = 32'h0;
     auto_ss_local_ack      = 1'b0;
     if (auto_ss_rd && device_match) begin
       case (auto_ss_state_idx)
         0: begin
-          auto_ss_local_data_out[25:0] = {lfo_freq, din_copy, value_A};
+          auto_ss_local_data_out[25:0] = {lfo_freq, ch_din, value_A};
           auto_ss_local_ack            = 1'b1;
         end
         1: begin
-          auto_ss_local_data_out[30:0] = {lfo_amd, value_B, test_mode, selected_register};
+          auto_ss_local_data_out[31:0] = {value_B, test_mode, reg_sel, op_din};
           auto_ss_local_ack            = 1'b1;
         end
         2: begin
           auto_ss_local_data_out[31:0] = {
+            clr_flag_A, up_op, lfo_w, up_ch, busy_cnt, nfrq, lfo_pmd, lfo_amd
+          };
+          auto_ss_local_ack = 1'b1;
+        end
+        3: begin
+          auto_ss_local_data_out[17:0] = {
+            busy,
+            up_tl,
+            up_rl,
+            up_pms,
+            up_ks,
+            up_kf,
+            up_keyon,
+            up_kc,
+            up_dt2,
             up_dt1,
             up_d1l,
             up_amsen,
             ne,
             lfo_up,
+            enable_irq_B,
             ct2,
             csm,
-            clr_flag_B,
-            up_op,
-            lfo_w,
-            up_ch,
-            busy_cnt,
-            nfrq,
-            lfo_pmd
-          };
-          auto_ss_local_ack = 1'b1;
-        end
-        3: begin
-          auto_ss_local_data_out[9:0] = {
-            old_write, busy, up_tl, up_rl, up_pms, up_ks, up_kf, up_keyon, up_kc, up_dt2
+            clr_flag_B
           };
           auto_ss_local_ack = 1'b1;
         end
@@ -5091,23 +5179,28 @@ module jt51_mmr (
 
   jt51_reg u_reg (
       .rst(rst),
-      .clk(clk),      // P1
-      .cen(cen),      // P1
-      .din(din_copy),
+      .clk(clk),  // P1
+      .cen(cen),  // P1
 
-      .up_rl   (up_rl),
-      .up_kc   (up_kc),
-      .up_kf   (up_kf),
-      .up_pms  (up_pms),
+      // operator updates
       .up_dt1  (up_dt1),
       .up_tl   (up_tl),
       .up_ks   (up_ks),
       .up_amsen(up_amsen),
       .up_dt2  (up_dt2),
       .up_d1l  (up_d1l),
+      .op      (up_op),         // operator to update
+      .ch      (up_ch),         // channel to update
+      .op_din  (op_din),
+      // channel updates
+      .up_rl   (up_rl),
+      .up_kc   (up_kc),
+      .up_kf   (up_kf),
+      .up_pms  (up_pms),
+      .ch_sel  (reg_sel[2:0]),  // channel is updated directly off the bus
+      .ch_din  (ch_din),
+
       .up_keyon(up_keyon),
-      .op      (up_op),     // operator to update
-      .ch      (up_ch),     // channel to update
 
       .csm       (csm),
       .overflow_A(overflow_A),
@@ -5173,34 +5266,34 @@ endmodule
 ///////////////////////////////////////////
 // MODULE jt51
 module jt51 (
-    input rst,  // reset
-    input clk,  // main clock
-    (* direct_enable *) input cen,  // clock enable
-    (* direct_enable *) input cen_p1,  // clock enable at half the speed
-    input cs_n,  // chip select
-    input wr_n,  // write
-    input a0,
-    input [7:0] din,  // data in
-    output [7:0] dout,  // data out
+    input                rst,                      // reset
+    input                clk,                      // main clock
+    input                cen,                      // clock enable
+    input                cen_p1,                   // clock enable at half the speed
+    input                cs_n,                     // chip select
+    input                wr_n,                     // write
+    input                a0,
+    input         [ 7:0] din,                      // data in
+    output        [ 7:0] dout,                     // data out
     // peripheral control
-    output ct1,
-    output ct2,
-    output irq_n,  // I do not synchronize this signal
+    output               ct1,
+    output               ct2,
+    output               irq_n,                    // I do not synchronize this signal
     // Low resolution output (same as real chip)
-    output sample,  // marks new output sample
+    output               sample,                   // marks new output sample
     output signed [15:0] left,
     output signed [15:0] right,
     // Full resolution output
     output signed [15:0] xleft,
     output signed [15:0] xright,
-    input auto_ss_rd,
-    input auto_ss_wr,
-    input [31:0] auto_ss_data_in,
-    input [7:0] auto_ss_device_idx,
-    input [15:0] auto_ss_state_idx,
-    input [7:0] auto_ss_base_device_idx,
-    output logic [31:0] auto_ss_data_out,
-    output logic auto_ss_ack
+    input                auto_ss_rd,
+    input                auto_ss_wr,
+    input         [31:0] auto_ss_data_in,
+    input         [ 7:0] auto_ss_device_idx,
+    input         [15:0] auto_ss_state_idx,
+    input         [ 7:0] auto_ss_base_device_idx,
+    output logic  [31:0] auto_ss_data_out,
+    output logic         auto_ss_ack
 
 );
   assign auto_ss_ack = auto_ss_u_timers_ack | auto_ss_u_lfo_ack | auto_ss_u_pg_ack | auto_ss_u_eg_ack | auto_ss_u_op_ack | auto_ss_u_noise_ack | auto_ss_u_acc_ack | auto_ss_u_mmr_ack;
@@ -5282,9 +5375,11 @@ module jt51 (
 
   );
 
-  /*verilator tracing_on*/
-
-
+  // Local change (kept across jt51 updates): the upstream
+  // ``define YM_TIMER_CTRL 8'h14` is dropped here.  It is defined but never
+  // used, and verible-verilog-syntax - which util/state_module.py parses
+  // with - fails on it, which silently skips jt51.v when regenerating
+  // rtl/jt51_auto_ss.sv.
 
   wire [1:0] rl_I;
   wire [2:0] fb_II;
@@ -5314,13 +5409,19 @@ module jt51 (
   wire [7:0] am;
   wire [7:0] pm;
   wire [6:0] amd, pmd;
-  wire [7:0] test_mode;
-  wire       noise;
+  wire [ 7:0] test_mode;
+  wire        noise;
+
+  wire [ 4:0] nfrq;
+  wire [11:0] noise_mix;
+  wire ne, op31_acc, op31_no;
 
   wire m1_enters, m2_enters, c1_enters, c2_enters;
   wire use_prevprev1, use_internal_x, use_internal_y, use_prev2, use_prev1;
 
   assign sample = zero & cen_p1;  // single strobe
+
+
 
   jt51_lfo u_lfo (
       .rst   (rst),
@@ -5356,9 +5457,6 @@ module jt51 (
   wire [4:0] keycode_III;
   wire [9:0] ph_X;
   wire       pg_rst_III;
-
-  /*verilator tracing_on*/
-
 
   jt51_pg u_pg (
       .rst                    (rst),
@@ -5428,7 +5526,6 @@ module jt51 (
 
   );
 
-  /*verilator tracing_off*/
   wire signed [13:0] op_out;
 
   jt51_op u_op (
@@ -5464,10 +5561,6 @@ module jt51 (
       .auto_ss_ack            (auto_ss_u_op_ack)
 
   );
-
-  wire [ 4:0] nfrq;
-  wire [11:0] noise_mix;
-  wire ne, op31_acc, op31_no;
 
   jt51_noise u_noise (
       .rst                    (rst),
@@ -5524,8 +5617,6 @@ module jt51 (
   wire write = !cs_n && !wr_n;
 
   assign dout = {busy, 5'h0, flag_B, flag_A};
-
-  /*verilator tracing_on*/
 
   jt51_mmr u_mmr (
       .rst  (rst),
