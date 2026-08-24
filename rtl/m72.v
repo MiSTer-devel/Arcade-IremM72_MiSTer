@@ -1024,6 +1024,277 @@ dualport_mailbox_2kx16 #(.SS_IDX(SSIDX_MCU_MAILBOX)) mcu_shared_ram(
     .ssbus(ssb[SSIDX_MCU_MAILBOX])
 );
 
+`ifdef VERILATOR
+//============================================================================
+// SIM-ONLY debug instrumentation: V30 <-> MCU mailbox handshake and the
+// i8751's own interrupt state.  Verilator only; synthesis never sees it.
+//
+// Written while chasing Ninja Spirit's sampled audio dying a few seconds into
+// play.  It turned out the mailbox is innocent - the V30 rings byte 0xffe once
+// per frame, forever, and the MCU acks every one - and the MCU was killing
+// itself: a lost timer-0 overflow (nu8051_seq.sv, the bit-destination write-
+// back) stretched its watchdog period from 18.3 ms to 98.8 ms, six V30
+// doorbells piled up inside one window, and the firmware took its fatal-halt
+// path.  The taps below are what made that visible, and are worth keeping:
+// doorbell/ack rates, the mailbox handshake bits, the firmware's own IRAM
+// watchdog bytes, and an mcu_events.log of every relevant edge.
+//============================================================================
+reg [31:0] dbg_tick /* verilator public_flat */ = 0;
+always @(posedge CLK_32M) dbg_tick <= dbg_tick + 1;
+
+wire dbg_ring_lvl = (cpu_mem_addr[19:16] == 4'hb) && MWR && cpu_be[0] &&
+                    (cpu_mem_addr[11:1] == 11'h7ff);
+wire dbg_bwr_lvl  = (cpu_mem_addr[19:16] == 4'hb) && MWR;
+wire dbg_ack_lvl  = mcu_ram_cs && ~mcu_ram_we && (mcu_ram_addr[11:1] == 11'h7ff);
+
+reg dbg_ring_q = 0, dbg_bwr_q = 0, dbg_ack_q = 0;
+always @(posedge CLK_32M) begin
+    dbg_ring_q <= dbg_ring_lvl;
+    dbg_bwr_q  <= dbg_bwr_lvl;
+    dbg_ack_q  <= dbg_ack_lvl;
+end
+wire dbg_ring_edge = dbg_ring_lvl & ~dbg_ring_q;
+wire dbg_bwr_edge  = dbg_bwr_lvl  & ~dbg_bwr_q;
+
+// counters
+reg [31:0] dbg_ring_cnt      /* verilator public_flat */ = 0;  // V30 doorbell writes
+reg [31:0] dbg_ring_lost_cnt /* verilator public_flat */ = 0;  // ...that found int_r pending
+reg [31:0] dbg_ack_cnt       /* verilator public_flat */ = 0;  // MCU reads of word 0xffe
+reg [31:0] dbg_mcu_wr_cnt    /* verilator public_flat */ = 0;  // MCU writes to shared RAM
+reg [31:0] dbg_mcu_rd_cnt    /* verilator public_flat */ = 0;  // MCU reads of shared RAM
+reg [31:0] dbg_v30_bwr_cnt   /* verilator public_flat */ = 0;  // V30 writes to 0xb0000 page
+reg [31:0] dbg_smpinc_cnt    /* verilator public_flat */ = 0;  // sample bytes fetched
+reg [31:0] dbg_mculatch_cnt  /* verilator public_flat */ = 0;  // z80 -> MCU latch writes
+reg [31:0] dbg_last_ring_t   /* verilator public_flat */ = 0;  // dbg_tick of last doorbell
+reg [31:0] dbg_last_ack_t    /* verilator public_flat */ = 0;  // dbg_tick of last MCU ack
+reg [31:0] dbg_max_ring_gap  /* verilator public_flat */ = 0;  // worst doorbell interval
+reg [31:0] dbg_max_ack_gap   /* verilator public_flat */ = 0;  // worst ack interval
+reg [15:0] dbg_last_ring_dat /* verilator public_flat */ = 0;  // data of last doorbell write
+reg  [7:0] dbg_int_r_state   /* verilator public_flat */ = 0;  // {rq,ack} snapshot
+reg [31:0] dbg_int_r_hi_cnt  /* verilator public_flat */ = 0;  // cycles int_r asserted
+
+// Every counter below is zeroed when a save state finishes restoring, so a
+// scripted run measures only what happened after the state load.
+wire dbg_rst = ss_restore_done;
+
+always @(posedge CLK_32M) begin
+    dbg_int_r_state <= { 6'd0, mcu_shared_ram.int_r_rq, mcu_shared_ram.int_r_ack };
+    if (mcu_ram_int) dbg_int_r_hi_cnt <= dbg_int_r_hi_cnt + 1;
+
+    if (dbg_ring_edge) begin
+        dbg_ring_cnt      <= dbg_ring_cnt + 1;
+        dbg_last_ring_dat <= cpu_dout;
+        dbg_last_ring_t   <= dbg_tick;
+        if (dbg_tick - dbg_last_ring_t > dbg_max_ring_gap)
+            dbg_max_ring_gap <= dbg_tick - dbg_last_ring_t;
+        if (mcu_ram_int) dbg_ring_lost_cnt <= dbg_ring_lost_cnt + 1;
+    end
+    if (dbg_bwr_edge) dbg_v30_bwr_cnt <= dbg_v30_bwr_cnt + 1;
+    if (dbg_ack_lvl) begin
+        dbg_ack_cnt    <= dbg_ack_cnt + 1;
+        dbg_last_ack_t <= dbg_tick;
+        if (dbg_tick - dbg_last_ack_t > dbg_max_ack_gap)
+            dbg_max_ack_gap <= dbg_tick - dbg_last_ack_t;
+    end
+    if (mcu_ram_cs &&  mcu_ram_we) dbg_mcu_wr_cnt <= dbg_mcu_wr_cnt + 1;
+    if (mcu_ram_cs && ~mcu_ram_we) dbg_mcu_rd_cnt <= dbg_mcu_rd_cnt + 1;
+    if (mcu_sample_inc)            dbg_smpinc_cnt <= dbg_smpinc_cnt + 1;
+    if (mculatch_en)               dbg_mculatch_cnt <= dbg_mculatch_cnt + 1;
+
+    if (dbg_rst) begin
+        dbg_ring_cnt <= 0; dbg_ring_lost_cnt <= 0; dbg_ack_cnt <= 0;
+        dbg_mcu_wr_cnt <= 0; dbg_mcu_rd_cnt <= 0; dbg_v30_bwr_cnt <= 0;
+        dbg_smpinc_cnt <= 0; dbg_mculatch_cnt <= 0; dbg_int_r_hi_cnt <= 0;
+        dbg_last_ring_t <= dbg_tick; dbg_last_ack_t <= dbg_tick;
+        dbg_max_ring_gap <= 0; dbg_max_ack_gap <= 0;
+    end
+end
+
+// Firmware landmark counters, so ISR entries can be compared against the
+// doorbells that are supposed to cause them.
+reg [15:0] dbg_mcu_pc_q = 0;
+reg [31:0] dbg_int0_cnt   /* verilator public_flat */ = 0;  // 0x04e9 INT0 ISR
+reg [31:0] dbg_int1_cnt   /* verilator public_flat */ = 0;  // 0x0563 INT1 ISR
+reg [31:0] dbg_t0_cnt     /* verilator public_flat */ = 0;  // 0x0501 timer-0 ISR
+reg [31:0] dbg_t0_early   /* verilator public_flat */ = 0;  // 0x055c early exit (5C!=0)
+reg [31:0] dbg_t0_clr_cnt /* verilator public_flat */ = 0;  // 0x054d MOV 5Dh,#0
+reg [31:0] dbg_t0_kill_cnt/* verilator public_flat */ = 0;  // 0x054a MOV 44h,#80
+reg [31:0] dbg_t0_inc_cnt /* verilator public_flat */ = 0;  // 0x0531 INC 44h
+reg [31:0] dbg_halt_cnt2  /* verilator public_flat */ = 0;  // 0x0316 fatal entry
+
+always @(posedge CLK_32M) begin
+    if (ce_mcu) begin
+        dbg_mcu_pc_q <= dbg_mcu_pc;
+        if (dbg_mcu_pc != dbg_mcu_pc_q) begin
+            case (dbg_mcu_pc)
+            16'h04e9: dbg_int0_cnt    <= dbg_int0_cnt + 1;
+            16'h0563: dbg_int1_cnt    <= dbg_int1_cnt + 1;
+            16'h0501: dbg_t0_cnt      <= dbg_t0_cnt + 1;
+            16'h055c: dbg_t0_early    <= dbg_t0_early + 1;
+            16'h054d: dbg_t0_clr_cnt  <= dbg_t0_clr_cnt + 1;
+            16'h054a: dbg_t0_kill_cnt <= dbg_t0_kill_cnt + 1;
+            16'h0531: dbg_t0_inc_cnt  <= dbg_t0_inc_cnt + 1;
+            16'h0316: dbg_halt_cnt2   <= dbg_halt_cnt2 + 1;
+            default: ;
+            endcase
+        end
+    end
+    if (dbg_rst) begin
+        dbg_int0_cnt <= 0; dbg_int1_cnt <= 0; dbg_t0_cnt <= 0; dbg_t0_early <= 0;
+        dbg_t0_clr_cnt <= 0; dbg_t0_kill_cnt <= 0; dbg_t0_inc_cnt <= 0;
+        dbg_halt_cnt2 <= 0;
+    end
+end
+
+// ------------------------------------------------------------------
+// Event log.  Verilator writes mcu_events.log next to the sim binary; the
+// scripts in sim/ parse it.  Everything that matters to the V30 <-> MCU
+// handshake gets a line, timestamped in CLK_32M ticks.
+// ------------------------------------------------------------------
+wire       dbg_iram_we    = mcu.nu8051.u_iram.p_en & mcu.nu8051.u_iram.p_we;
+wire [7:0] dbg_iram_wa    = mcu.nu8051.u_iram.p_addr;
+wire [7:0] dbg_iram_wd    = mcu.nu8051.u_iram.p_wdata;
+reg        dbg_int_r_q    = 0;
+reg        dbg_mcu_int_q  = 0;
+// nu8051 interrupt/timer taps
+wire       dbg_irq_ack  = mcu.nu8051.irq_ack;
+wire [2:0] dbg_irq_src  = mcu.nu8051.irq_ack_src;
+wire       dbg_irq_prio = mcu.nu8051.irq_ack_prio;
+wire [7:0] dbg_tcon /* verilator public_flat_rd */ = mcu.nu8051.tcon_q;
+wire [7:0] dbg_tl0  /* verilator public_flat_rd */ = mcu.nu8051.u_timer.tl0_r;
+wire [7:0] dbg_th0  /* verilator public_flat_rd */ = mcu.nu8051.u_timer.th0_r;
+wire [7:0] dbg_ie   /* verilator public_flat_rd */ = mcu.nu8051.u_irq.ie_r;
+reg  [7:0] dbg_tcon_q = 0;
+reg  [7:0] dbg_ie_q   = 0;
+
+integer dbg_log = 0;
+initial dbg_log = $fopen("mcu_events.log", "w");
+// A wedged MCU spins on MOVX @DPTR,A at ~30k writes a frame, so the log is
+// capped rather than left to eat the disk.  DBG_LOG_MAX lines is minutes of
+// healthy play and still catches the wedge that follows a failure.
+localparam int DBG_LOG_MAX = 400000;
+reg [31:0] dbg_log_lines = 0;
+wire dbg_logging = (dbg_log != 0) && (dbg_log_lines < DBG_LOG_MAX);
+wire dbg_evt = dbg_rst | dbg_ring_edge | (dbg_ack_lvl & ~dbg_ack_q)
+             | (mcu_ram_cs & mcu_ram_we & (mcu_ram_addr[11:2] == 10'h3ff))
+             | (mcu_ram_int != dbg_int_r_q) | dbg_irq_ack
+             | (dbg_tcon != dbg_tcon_q) | (dbg_ie != dbg_ie_q)
+             | (dbg_iram_we & ((dbg_iram_wa == 8'h44) | (dbg_iram_wa == 8'h45) |
+                               (dbg_iram_wa == 8'h5b) | (dbg_iram_wa == 8'h5c) |
+                               (dbg_iram_wa == 8'h5d)));
+
+always @(posedge CLK_32M) begin
+    dbg_int_r_q <= mcu_ram_int;
+    dbg_tcon_q  <= dbg_tcon;
+    dbg_ie_q    <= dbg_ie;
+    if (dbg_logging) begin
+        if (dbg_evt) dbg_log_lines <= dbg_log_lines + 1;
+        if (dbg_rst)
+            $fwrite(dbg_log, "%0d RESTORE\n", dbg_tick);
+        if (dbg_ring_edge)
+            $fwrite(dbg_log, "%0d RING data=%04x be=%b v30pc=%05x\n",
+                    dbg_tick, cpu_dout, cpu_be, dbg_v30_pc);
+        if (dbg_ack_lvl & ~dbg_ack_q)
+            $fwrite(dbg_log, "%0d MCURD addr=%03x\n", dbg_tick, mcu_ram_addr);
+        if (mcu_ram_cs & mcu_ram_we & (mcu_ram_addr[11:2] == 10'h3ff))
+            $fwrite(dbg_log, "%0d MCUWR addr=%03x data=%02x\n",
+                    dbg_tick, mcu_ram_addr, mcu_ram_dout);
+        if (mcu_ram_int != dbg_int_r_q)
+            $fwrite(dbg_log, "%0d INT0=%0d\n", dbg_tick, mcu_ram_int);
+        if (dbg_irq_ack)
+            $fwrite(dbg_log, "%0d IRQACK src=%0d prio=%0d tcon=%02x ie=%02x\n",
+                    dbg_tick, dbg_irq_src, dbg_irq_prio, dbg_tcon, dbg_ie);
+        if (dbg_tcon != dbg_tcon_q)
+            $fwrite(dbg_log, "%0d TCON %02x->%02x tl0=%02x th0=%02x mcupc=%04x\n",
+                    dbg_tick, dbg_tcon_q, dbg_tcon, dbg_tl0, dbg_th0, dbg_mcu_pc);
+        if (dbg_ie != dbg_ie_q)
+            $fwrite(dbg_log, "%0d IE %02x->%02x mcupc=%04x\n",
+                    dbg_tick, dbg_ie_q, dbg_ie, dbg_mcu_pc);
+        if (dbg_iram_we && (dbg_iram_wa == 8'h44 || dbg_iram_wa == 8'h45 ||
+                            dbg_iram_wa == 8'h5b || dbg_iram_wa == 8'h5c ||
+                            dbg_iram_wa == 8'h5d))
+            $fwrite(dbg_log, "%0d IRAM[%02x]=%02x mcupc=%04x\n",
+                    dbg_tick, dbg_iram_wa, dbg_iram_wd, dbg_mcu_pc);
+    end
+end
+
+// The i8751 firmware's watchdog, straight out of the PROM:
+//   INT0 ISR  (0x04e9): reads mailbox bytes CFFE/CFFF, then INC 5Dh
+//   timer-0   (0x0526): 5D==1 -> MOV 44h,#00; 5D==0 or 2 -> INC 44h;
+//                       5D>=3 -> MOV 44h,#80h
+//   main loop (0x030f): 44h >= 0x1e -> fatal halt at 0x0316 (TR0 off, EA off,
+//                       AJMP 0x31d forever) - no more samples, no protection.
+// So three doorbells inside one timer-0 period kill the MCU instantly.  Latch
+// everything about the first time 5D reaches 3.
+wire [7:0] dbg_iram_5d /* verilator public_flat_rd */ = mcu.nu8051.u_iram.mem['h5d];
+wire [7:0] dbg_iram_44 /* verilator public_flat_rd */ = mcu.nu8051.u_iram.mem['h44];
+reg  [7:0] dbg_5d_max  /* verilator public_flat */ = 0;
+reg        dbg_trip    /* verilator public_flat */ = 0;
+reg [31:0] dbg_trip_tick /* verilator public_flat */ = 0;
+reg [31:0] dbg_trip_ring_cnt /* verilator public_flat */ = 0;
+
+// last four doorbell rings and MCU acks, frozen once the trip fires
+reg [31:0] dbg_ring_t0 /* verilator public_flat */ = 0;
+reg [31:0] dbg_ring_t1 /* verilator public_flat */ = 0;
+reg [31:0] dbg_ring_t2 /* verilator public_flat */ = 0;
+reg [31:0] dbg_ring_t3 /* verilator public_flat */ = 0;
+reg [31:0] dbg_ring_pc0 /* verilator public_flat */ = 0;
+reg [31:0] dbg_ring_pc1 /* verilator public_flat */ = 0;
+reg [31:0] dbg_ring_pc2 /* verilator public_flat */ = 0;
+reg [31:0] dbg_ring_pc3 /* verilator public_flat */ = 0;
+reg [31:0] dbg_ack_t0  /* verilator public_flat */ = 0;
+reg [31:0] dbg_ack_t1  /* verilator public_flat */ = 0;
+reg [31:0] dbg_ack_t2  /* verilator public_flat */ = 0;
+reg [31:0] dbg_ack_t3  /* verilator public_flat */ = 0;
+
+wire [31:0] dbg_v30_pc = { 4'd0, dbg_v30_regs[159:144] } * 32'd16 +
+                         { 16'd0, dbg_v30_regs[207:192] };
+
+always @(posedge CLK_32M) begin
+    if (dbg_iram_5d > dbg_5d_max) dbg_5d_max <= dbg_iram_5d;
+    if (!dbg_trip) begin
+        if (dbg_ring_edge) begin
+            dbg_ring_t3 <= dbg_ring_t2; dbg_ring_t2 <= dbg_ring_t1;
+            dbg_ring_t1 <= dbg_ring_t0; dbg_ring_t0 <= dbg_tick;
+            dbg_ring_pc3 <= dbg_ring_pc2; dbg_ring_pc2 <= dbg_ring_pc1;
+            dbg_ring_pc1 <= dbg_ring_pc0; dbg_ring_pc0 <= dbg_v30_pc;
+        end
+        if (dbg_ack_lvl && !dbg_ack_q) begin
+            dbg_ack_t3 <= dbg_ack_t2; dbg_ack_t2 <= dbg_ack_t1;
+            dbg_ack_t1 <= dbg_ack_t0; dbg_ack_t0 <= dbg_tick;
+        end
+        if (dbg_iram_5d >= 8'd3) begin
+            dbg_trip          <= 1'b1;
+            dbg_trip_tick     <= dbg_tick;
+            dbg_trip_ring_cnt <= dbg_ring_cnt;
+        end
+    end
+    if (dbg_rst) begin
+        dbg_trip <= 0; dbg_trip_tick <= 0; dbg_trip_ring_cnt <= 0; dbg_5d_max <= 0;
+        dbg_ring_t0 <= 0; dbg_ring_t1 <= 0; dbg_ring_t2 <= 0; dbg_ring_t3 <= 0;
+        dbg_ring_pc0 <= 0; dbg_ring_pc1 <= 0; dbg_ring_pc2 <= 0; dbg_ring_pc3 <= 0;
+        dbg_ack_t0 <= 0; dbg_ack_t1 <= 0; dbg_ack_t2 <= 0; dbg_ack_t3 <= 0;
+    end
+end
+
+// MCU program counter, and a sticky record of the fatal-halt window.
+wire [15:0] dbg_mcu_pc /* verilator public_flat_rd */ = mcu.nu8051.u_seq.pc;
+reg  [15:0] dbg_mcu_pc_min /* verilator public_flat */ = 16'hffff;
+reg  [15:0] dbg_mcu_pc_max /* verilator public_flat */ = 0;
+reg [31:0] dbg_mcu_halt_cnt /* verilator public_flat */ = 0;
+always @(posedge CLK_32M) begin
+    if (ce_mcu) begin
+        if (dbg_mcu_pc < dbg_mcu_pc_min) dbg_mcu_pc_min <= dbg_mcu_pc;
+        if (dbg_mcu_pc > dbg_mcu_pc_max) dbg_mcu_pc_max <= dbg_mcu_pc;
+        if (dbg_mcu_pc >= 16'h031d && dbg_mcu_pc <= 16'h0320)
+            dbg_mcu_halt_cnt <= dbg_mcu_halt_cnt + 1;
+    end
+    if (dbg_rst) begin
+        dbg_mcu_pc_min <= 16'hffff; dbg_mcu_pc_max <= 0; dbg_mcu_halt_cnt <= 0;
+    end
+end
+`endif
+
 wire [7:0] mculatch_data = board_cfg.main_mculatch ? cpu_dout[7:0] : snd_io_data;
 wire mculatch_en = board_cfg.main_mculatch ? ( IOWR && cpu_mem_addr[7:1] == 7'h60 && cpu_be[0] ) : ( snd_io_req && snd_io_addr == 8'h82 );
 

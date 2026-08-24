@@ -1,6 +1,6 @@
 //============================================================================
 // Imported from nu8051 (machine-cycle-accurate Intel 8051/8052 core, SystemVerilog)
-// Source: rtl/nu8051_seq.sv, commit e2c97de0fabb3b3baa1eb98a15284bc74ef92f4e
+// Source: rtl/nu8051_seq.sv, commit ad28e1b655ec7a38054174beaed157f013ea5643
 // Do not hand-edit; re-import from upstream. The M72 integration wrapper is
 // rtl/mcu.sv (distilled from nu8051 rtl/m72/mcu.sv), NOT a raw re-import.
 //============================================================================
@@ -138,10 +138,14 @@
 //      "d_src or d_dst is OPK_BIT" - and no bit opcode carries an @Ri, Rn or
 //      `direct` operand, so no slot can collide.
 //    * Bit writes are byte read-modify-writes (§5.3): the ALU replaces one bit
-//      of `a` (the byte just read) using the MASK on `b`, and the whole byte
+//      of `a` (the containing byte) using the MASK on `b`, and the whole byte
 //      commits at S6P2 through the ordinary destination path with the
 //      containing byte as its address.  Nothing else in the byte survives by
-//      accident - it survives because it was read back.
+//      accident - it survives because it was READ BACK LIVE: for an SFR bit
+//      the commit merges the ALU's addressed bit with `sfr_rdata` at S6P2,
+//      not with the read slot's rd2_data image.  TF0/TF1 land at S5P2, in
+//      between, and a bit write must not carry a stale image of a bit it
+//      does not address over the top of them (see `sfr_wdata` below).
 //    * Carry-destination forms present {7'b0, source bit} on `b` instead, so
 //      one ALU arm per mnemonic serves both halves of the family (§4.1).
 //      `ANL C,/bit` / `ORL C,/bit` complement that source bit and write
@@ -1407,7 +1411,37 @@ module nu8051_seq #(
     // (§5.2), so `sfr_wdata` keeps the ALU value unconditionally.
     assign iram_wdata = push_pair ? ((ph == PH_S6P1) ? op1_r : op2_r)
                                   : mem_wval;
-    assign sfr_wdata  = mem_wval;
+    // C5.2 fix - a bit write is a BIT write.  The byte an SFR bit destination
+    // stores back must leave every bit it does not address exactly as it
+    // stands at the COMMIT edge, and `mem_wval` cannot: the ALU computed it
+    // from `rd2_data`, the containing-byte image captured back in the
+    // instruction's own read slot (S5P1 for shape B, the R1 slot of C2 for
+    // shapes C2/C3).  TF0/TF1 are set by the timers at S5P2 (periph §4.5) -
+    // after both of those slots and before this S6P2 commit - so writing the
+    // image back let `SETB TR0` erase a timer overflow that happened inside
+    // its own machine cycle, and the interrupt was never taken.
+    //
+    // So take the ADDRESSED bit from the ALU (which keeps every mnemonic's
+    // semantics exactly as C4.5 defined them, `bit_val`-consistent: computed
+    // from what the instruction read) and every OTHER bit live off
+    // `sfr_rdata`.  At S6P2 the SFR bus already carries `bit_byte` as
+    // `sfr_addr` (the destination mux above) and `sfr_rmw` is still asserted
+    // there, so `sfr_rdata` IS the current containing byte and a PORT
+    // destination still reads its LATCH, which an RMW must (timing §5).
+    //
+    // Deliberately a mask merge on the write path rather than an `alu_a`
+    // arm: feeding the live SFR read mux through the ALU's operand and
+    // result muxes to reach this port costs ~7 ns on the G6 critical path
+    // (savestate_design §7.7.1) and nearly broke 32 MHz closure.  Two LUT
+    // levels here cost nothing measurable and say the same thing.
+    //
+    // The IRAM half of bit space (20-2FH) needs no such arm - nothing but
+    // this core writes it, so its read-slot image cannot go stale - hence
+    // `iram_wdata` above keeps `mem_wval`.  A BYTE-wide RMW on a flag
+    // register (`ANL TCON,#..`) is a genuine whole-byte read-modify-write
+    // and keeps the hazard, exactly as on real silicon.
+    wire [7:0] bit_merge = (mem_wval & bit_mask) | (sfr_rdata & ~bit_mask);
+    assign sfr_wdata  = (bit_dst && bit_is_sfr) ? bit_merge : mem_wval;
     // an exchange always writes A as well, whatever its `dst` operand kind is;
     // MUL/DIV write the {B,A} PAIR, so their `dst == OPK_B` row still commits A;
     // RLC/RRC resolve d_dst to OPK_C (their writes list is {A,C} and C outranks

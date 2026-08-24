@@ -1,6 +1,6 @@
 //============================================================================
 // Imported from nu8051 (machine-cycle-accurate Intel 8051/8052 core, SystemVerilog)
-// Source: rtl/nu8051_iram.sv, commit e2c97de0fabb3b3baa1eb98a15284bc74ef92f4e
+// Source: rtl/nu8051_iram.sv, commit ad28e1b655ec7a38054174beaed157f013ea5643
 // Do not hand-edit; re-import from upstream. The M72 integration wrapper is
 // rtl/mcu.sv (distilled from nu8051 rtl/m72/mcu.sv), NOT a raw re-import.
 //============================================================================
