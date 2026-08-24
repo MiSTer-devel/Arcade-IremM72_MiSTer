@@ -205,6 +205,10 @@ class SimController
     ControllerResult<std::vector<std::string>> ListRegions() const;
     ControllerResult<EmptyResult> DebugLinkStart(uint32_t commsWordAddr = 0x1F800);
     ControllerResult<EmptyResult> DebugLinkStop();
+
+    // Poke a byte into the Z80 sound command latch as if the main CPU had
+    // written it (see sim_sound_ui.h).
+    ControllerResult<EmptyResult> SendSoundCommand(uint8_t value, bool latch2);
     ControllerResult<EmptyResult> DebugLinkWrite(const std::vector<uint8_t> &data, uint64_t timeoutCyclesPerByte = 2000000);
     ControllerResult<DebugLinkReadResult> DebugLinkRead(uint32_t maxBytes, uint32_t minBytes = 0, uint64_t timeoutCycles = 2000000);
     ControllerResult<SignalReadResult> ReadSignal(const std::string &signal) const;

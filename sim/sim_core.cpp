@@ -12,6 +12,7 @@
 #include "sim_video.h"
 #include "sim_audio_capture.h"
 #include "testrom_gui.h"
+#include "sim_sound_ui.h"
 
 #include <cstring>
 #include <cstdio>
@@ -94,6 +95,7 @@ void SimCore::Init()
     mDebugLinkTx.clear();
     mDebugLinkRx.clear();
     GetTestRomGuiWindow().Reset();
+    SoundCommandsReset();
     gPrevVblank = false;
 
     // Debug enables default on (mirrors the OSD debug page defaults)
@@ -232,6 +234,7 @@ TickResult SimCore::TickOneCycle()
                             static_cast<int16_t>(mTop->audio_r));
     }
     DebugLinkTick();
+    SoundCommandsTick();
 
     const bool vblank = mTop->vblank != 0;
     if (vblank && !gPrevVblank)
@@ -483,6 +486,7 @@ void SimCore::Shutdown()
     mVideo.reset();
     mSignalWatchpointCallback = nullptr;
     GetTestRomGuiWindow().Reset();
+    SoundCommandsReset();
     gPrevVblank = false;
 }
 

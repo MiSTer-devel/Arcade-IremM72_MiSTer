@@ -1,4 +1,5 @@
 #include "sim_controller.h"
+#include "sim_sound_ui.h"
 
 #include <algorithm>
 #include <cstring>
@@ -429,6 +430,15 @@ ControllerResult<EmptyResult> SimController::DebugLinkStart(uint32_t commsWordAd
     if (!initResult.ok)
         return initResult;
     gSimCore.DebugLinkStart(commsWordAddr);
+    return ControllerResult<EmptyResult>::Success({});
+}
+
+ControllerResult<EmptyResult> SimController::SendSoundCommand(uint8_t value, bool latch2)
+{
+    auto initResult = EnsureInitialized();
+    if (!initResult.ok)
+        return initResult;
+    SoundCommandsInject(value, latch2);
     return ControllerResult<EmptyResult>::Success({});
 }
 

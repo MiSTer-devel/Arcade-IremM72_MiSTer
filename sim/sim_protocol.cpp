@@ -865,6 +865,20 @@ std::string SimProtocol::HandleLine(const std::string &line)
             regions.push_back(JsonValue::String(region));
         return SerializeJson(WrapControllerResult(id, result, JsonValue::Array(std::move(regions))));
     }
+    if (method == "sound.send")
+    {
+        uint64_t value = 0;
+        bool latch2 = false;
+        if (!RequireObjectField(params, "value", field, error) || !RequireNumber(*field, "value", value, error))
+            return SerializeJson(MakeErrorResponse(id, "bad_request", error));
+        if (const JsonValue *latchField = FindObjectField(params, "latch2"))
+        {
+            if (!RequireBool(*latchField, "latch2", latch2, error))
+                return SerializeJson(MakeErrorResponse(id, "bad_request", error));
+        }
+        auto result = mController.SendSoundCommand(static_cast<uint8_t>(value), latch2);
+        return SerializeJson(WrapControllerResult(id, result, JsonValue::Object({})));
+    }
     if (method == "debug_link.start")
     {
         uint64_t commsAddr = 0x1F800;

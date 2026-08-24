@@ -87,5 +87,10 @@ by name, GFX/sound from the hharryu/hharry zips by CRC.
 - The V30 CPU window shows CS:IP/opcode (+ capstone disasm); full register
   export isn't available from the netlist.
 - Audio capture writes 50 kHz stereo WAV (`audio_capture.start/stop`).
+- The **Sound Commands** window logs every byte the main CPU writes to the Z80
+  sound latch, decoded against the sound driver's command table read live out
+  of the sound RAM (R-Type; other games get raw bytes).  `M72_SOUND_LOG=1`
+  mirrors the same log to stderr for headless runs.  See
+  `../docs/rtype_sound_commands.md`.
 - One sim tick = one CLK_32M cycle (three CLK_96M cycles); `sim.run_cycles`
   counts these ticks.

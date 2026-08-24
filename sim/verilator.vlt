@@ -42,3 +42,43 @@ public -module "dpramv_cen" -var "ram"
 public -module "dualport_ram_unreg" -var "ram"
 public -module "dualport_ram_be" -var "ram"
 public -module "singleport_ram" -var "ram"
+
+// Sound command monitor (sim_sound_ui.cpp): the V30 -> Z80 latch strobes and
+// the CPU write-data bus, so the harness can log every sound command byte the
+// game sends without touching the synthesis RTL.
+public -module "m72" -var "snd_latch1_wr"
+public -module "m72" -var "snd_latch2_wr"
+public -module "m72" -var "cpu_dout"
+
+// Sound command injection and YM2151 write tracing (sim_sound_ui.cpp): the
+// command latch the Z80 reads, and the YM2151 bus the driver drives.
+public -module "sound" -var "snd_latch1"
+public -module "sound" -var "snd_latch1_ready"
+public -module "sound" -var "snd_latch2"
+public -module "sound" -var "snd_latch2_ready"
+public -module "sound" -var "SCS"
+public -module "sound" -var "SWR_N"
+public -module "sound" -var "SA0"
+public -module "sound" -var "SD_IN"
+
+// jt51 internals for the LFO/PM investigation (M72_JT51_LOG in
+// sim_sound_ui.cpp): slot counter, per-slot phase and total attenuation, and
+// the LFO's pitch/amplitude modulation outputs.
+public -module "jt51" -var "cycles"
+public -module "jt51" -var "ph_X"
+public -module "jt51" -var "eg_XI"
+public -module "jt51" -var "pm"
+public -module "jt51" -var "am"
+
+// jt51 envelope generator internals: the selected rate config, the effective
+// rate after key scaling, the EG state and the raw (TL-free) envelope level.
+public -module "jt51_eg" -var "cfg_III"
+public -module "jt51_eg" -var "rate_V"
+public -module "jt51_eg" -var "state_in_V"
+public -module "jt51_eg" -var "eg_VII"
+public -module "jt51_eg" -var "kshift_III"
+public -module "jt51_eg" -var "sum_up"
+public -module "jt51_eg" -var "step_VI"
+public -module "jt51_eg" -var "cnt_V"
+public -module "jt51_eg" -var "cnt_out"
+public -module "jt51_eg" -var "eg_cnt"
