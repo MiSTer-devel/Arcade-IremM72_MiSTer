@@ -328,3 +328,59 @@ YM2151 register writes the driver makes in response - diffing that trace against
 the same trace from `irem_emu` is the quickest way to tell a driver/timing
 problem from a jt51 problem.
 
+
+## Appendix: why sound 0x34 was wrong (jt51 EG bug)
+
+`0x34` is the only R-Type sound that drives the YM2151 LFO at depth - `18 <- F5`
+(LFRQ), `1B <- 03` (waveform 3, noise), `19 <- 7F` / `19 <- FF` (AMD and PMD
+both maximum) and `38 <- 70` (PMS = 7). In the core it played for ~70 ms and
+then went silent; `irem_emu` sustains it for 1.05 s. The Z80 side was never at
+fault: all 81 YM2151 register writes are byte-identical between the two, in the
+same order, with retrigger intervals matching to 0.3%.
+
+The fault was in jt51, and the update to upstream `985a573` did not fix it -
+`jt51_lfo.v`, `jt51_pm.v`, `jt51_op.v` and `jt51_kon.v` have had no upstream
+commits since 2022.
+
+**Mechanism.** `jt51_pg` computes `keycode_III` *after* `jt51_pm` has added the
+LFO's pitch modulation, and that same signal is what `jt51_eg` uses for key
+scaling (`kshift_III = keycode_III >> ~ks_III`, then
+`pre_rate_III = 2*cfg_III + kshift_III`). So vibrato moves the envelope rate.
+That is harmless while the wobble stays inside one `rate[5:2]` group, because
+the group is what selects which slice of the global `eg_cnt` counter the
+operator watches:
+
+```verilog
+case( rate_IV[5:2] )            // jt51_eg.v, stage IV
+    4'h1: cnt_V <= eg_cnt[13:11];
+    4'h2: cnt_V <= eg_cnt[12:10];
+    ...
+sum_up <= cnt_V[0] != cnt_out;  // stage V - edge detect vs. last sample
+```
+
+When the wobble crosses a boundary the slice changes, `cnt_V[0]` jumps between
+two unrelated bits of `eg_cnt`, and `sum_up` fires on the *slice change* instead
+of on a real envelope tick. The envelope then advances at the LFO's rate.
+
+`0x34`'s carriers sit at `D1R = 3`, and with `kshift` oscillating 1<->2 their
+rate oscillates 7<->8 - which straddles the boundary (`7>>2 = 1`, `8>>2 = 2`).
+Its modulators sit at `D1R = 12`, rate 25<->26, and `25>>2 == 26>>2 == 6`, so
+they are unaffected. That asymmetry is the fingerprint, and it is what the
+traces show:
+
+| operator | D1R | rate | raw eg over 87 ms | model, steady rate | model, wobbling |
+|---|---|---|---|---|---|
+| M1, M2 (modulators) | 12 | 25/26 | **+30** | +32 | +32 |
+| C1, C2 (carriers) | 3 | 7/8 | **+408** | +0 / +2 | +900 |
+
+**Fix.** `rtl/jt51/jt51_pg.v` feeds `keycode_III` from a second, modulation-free
+`jt51_pm` instance. DT2 is still applied to it - that is a static per-operator
+detune and does belong in the key scaling; only the LFO is excluded. Recorded as
+a local patch in `savestates.md` so it survives the next jt51 re-import, and
+worth reporting upstream.
+
+After the fix, 0x34 sustains for the full 1.05 s and ends at the same instant as
+`irem_emu`, with an envelope correlation of 0.83; the residual level difference
+(core ~0.7x) is the same fixed output-gain offset that all sounds show.
+
+

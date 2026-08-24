@@ -1785,6 +1785,7 @@ module jt51_pg (
   reg  [ 9:0] phinc_addr_III;
 
   reg  [13:0] keycode_II;
+  reg  [13:0] keycode_nopm_II;  // EG key scaling copy, free of LFO PM
   reg  [ 5:0] dt1_kf_III;
   reg  [ 2:0] dt1_kf_IV;
 
@@ -1866,6 +1867,28 @@ module jt51_pg (
       .kcex (keycode_I)
   );
 
+  // Local change (kept across jt51 updates): the envelope generator's key
+  // scaling must NOT see the LFO's pitch modulation.  `keycode_III` below is
+  // the ONLY thing jt51_eg uses `keycode` for (kshift_III = keycode_III >> ~ks),
+  // and feeding it the PM-modulated key code lets vibrato move the envelope
+  // rate.  That is inaudible while the rate stays inside one `rate[5:2]` group,
+  // but when the wobble crosses a group boundary jt51_eg re-slices `eg_cnt`
+  // (the `cnt_V` mux) and its `sum_up = cnt_V[0] != cnt_out` edge detector fires
+  // on the slice change rather than on a real envelope tick - so the envelope
+  // then decays at the LFO's rate instead of D1R.  R-Type's sound 0x34
+  // (PMS=7, PMD=0x7F, LFO waveform 3) hits this: its carriers run at rate 7/8,
+  // which straddles the boundary, and the note dies in ~70ms instead of ~1s.
+  // Second, mod-free instance; the constant 0 optimises nearly all of it away.
+  wire [12:0] keycode_nopm_I;
+
+  jt51_pm u_pm_nopm (
+      .kc_I (kc_I),
+      .kf_I (kf_I),
+      .add  (1'b1),
+      .mod_I(9'd0),
+      .kcex (keycode_nopm_I)
+  );
+
   // limit value at which we add +64 to the keycode
   // I assume this is to avoid the note==3 violation somehow
   parameter dt2_lim2 = 8'd11 + 8'd64;
@@ -1882,11 +1905,29 @@ module jt51_pg (
         2'd3:
         keycode_II <= {1'b0, keycode_I} + 14'd800 + (keycode_I[7:0] > dt2_lim3 ? 14'd64 : 14'd0);
       endcase
+      // Same DT2 treatment for the EG's copy - DT2 is a static per-operator
+      // detune and does belong in the key scaling; only the LFO is excluded.
+      case (dt2_I)
+        2'd0:
+        keycode_nopm_II <= {1'b0, keycode_nopm_I} + (keycode_nopm_I[7:6] == 2'd3 ? 14'd64 : 14'd0);
+        2'd1:
+        keycode_nopm_II <= { 1'b0, keycode_nopm_I } + 14'd512 +
+            (keycode_nopm_I[7:6]==2'd3 ? 14'd64:14'd0);
+        2'd2:
+        keycode_nopm_II <= { 1'b0, keycode_nopm_I } + 14'd628 +
+            (keycode_nopm_I[7:0]>dt2_lim2 ? 14'd64:14'd0);
+        2'd3:
+        keycode_nopm_II <= { 1'b0, keycode_nopm_I } + 14'd800 +
+            (keycode_nopm_I[7:0]>dt2_lim3  ? 14'd64:14'd0);
+      endcase
     end
     if (auto_ss_wr && device_match) begin
       case (auto_ss_state_idx)
         6: begin
           keycode_II <= auto_ss_data_in[31:18];
+        end
+        7: begin
+          keycode_nopm_II <= auto_ss_data_in[13:0];
         end
         default: begin
         end
@@ -1901,7 +1942,7 @@ module jt51_pg (
     if (cen) begin
       phinc_addr_III <= keycode_II[9:0];
       octave_III     <= keycode_II[13:10];
-      keycode_III    <= keycode_II[12:8];
+      keycode_III    <= keycode_nopm_II[12:8];  // EG key scaling: no LFO PM
       // Using bits 13:9 fixes Double Dragon issue #14
       // but notes get too long in Jackal
       case (dt1_II[1:0])
@@ -1915,13 +1956,13 @@ module jt51_pg (
     if (auto_ss_wr && device_match) begin
       case (auto_ss_state_idx)
         7: begin
-          phinc_addr_III <= auto_ss_data_in[9:0];
-          dt1_kf_III     <= auto_ss_data_in[15:10];
-          keycode_III    <= auto_ss_data_in[20:16];
-          octave_III     <= auto_ss_data_in[29:26];
+          phinc_addr_III <= auto_ss_data_in[23:14];
+          dt1_kf_III     <= auto_ss_data_in[29:24];
         end
         8: begin
-          dt1_III <= auto_ss_data_in[2:0];
+          keycode_III <= auto_ss_data_in[4:0];
+          octave_III  <= auto_ss_data_in[13:10];
+          dt1_III     <= auto_ss_data_in[16:14];
         end
         default: begin
         end
@@ -1956,9 +1997,9 @@ module jt51_pg (
           phase_base_IV <= auto_ss_data_in[17:0];
         end
         8: begin
-          dt1_IV     <= auto_ss_data_in[5:3];
-          dt1_kf_IV  <= auto_ss_data_in[8:6];
-          pow2ind_IV <= auto_ss_data_in[11:9];
+          dt1_IV     <= auto_ss_data_in[19:17];
+          dt1_kf_IV  <= auto_ss_data_in[22:20];
+          pow2ind_IV <= auto_ss_data_in[25:23];
         end
         default: begin
         end
@@ -1981,11 +2022,9 @@ module jt51_pg (
         6: begin
           phase_base_V <= auto_ss_data_in[17:0];
         end
-        7: begin
-          dt1_offset_V <= auto_ss_data_in[25:21];
-        end
         8: begin
-          dt1_V <= auto_ss_data_in[14:12];
+          dt1_offset_V <= auto_ss_data_in[9:5];
+          dt1_V        <= auto_ss_data_in[28:26];
         end
         default: begin
         end
@@ -2122,14 +2161,14 @@ module jt51_pg (
           auto_ss_local_ack            = 1'b1;
         end
         7: begin
-          auto_ss_local_data_out[29:0] = {
-            octave_III, dt1_offset_V, keycode_III, dt1_kf_III, phinc_addr_III
-          };
-          auto_ss_local_ack = 1'b1;
+          auto_ss_local_data_out[29:0] = {dt1_kf_III, phinc_addr_III, keycode_nopm_II};
+          auto_ss_local_ack            = 1'b1;
         end
         8: begin
-          auto_ss_local_data_out[14:0] = {dt1_V, pow2ind_IV, dt1_kf_IV, dt1_IV, dt1_III};
-          auto_ss_local_ack            = 1'b1;
+          auto_ss_local_data_out[28:0] = {
+            dt1_V, pow2ind_IV, dt1_kf_IV, dt1_IV, dt1_III, octave_III, dt1_offset_V, keycode_III
+          };
+          auto_ss_local_ack = 1'b1;
         end
         default: begin
         end

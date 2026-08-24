@@ -79,6 +79,14 @@ silently:
   scope, so the generator injects its read/restore logic once instead of per
   genvar bit (which produced a multidriven `auto_ss_data_out` and crippled sim
   speed). Matches the `jt12_sh` style the generator handles.
+* `jt51_pg.v` - `keycode_III`, which is the *only* thing `jt51_eg` uses the key
+  code for (`kshift_III = keycode_III >> ~ks`), is taken from a second,
+  modulation-free `jt51_pm` instance instead of the PM-modulated one. Letting
+  the LFO's vibrato into the envelope's key scaling makes the effective rate
+  wobble; when the wobble crosses a `rate[5:2]` group boundary the EG re-slices
+  `eg_cnt` and its `sum_up = cnt_V[0] != cnt_out` edge detector fires on the
+  slice change rather than on a real envelope tick, so the envelope decays at
+  the LFO's rate instead of D1R. See `rtype_sound_commands.md`.
 * `jt51.v` - the unused ``define YM_TIMER_CTRL 8'h14` is deleted.
   `verible-verilog-syntax` fails to parse it, and the failure is *silent*: the
   generator skips `jt51.v` and emits a plausible-looking but incomplete file.
