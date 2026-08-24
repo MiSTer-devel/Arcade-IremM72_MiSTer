@@ -384,3 +384,33 @@ After the fix, 0x34 sustains for the full 1.05 s and ends at the same instant as
 (core ~0.7x) is the same fixed output-gain offset that all sounds show.
 
 
+## Appendix: the +4252 DC offset on the audio output
+
+Separate from the jt51 bug, and found while capturing the above: with nothing
+playing, R-Type's audio output sat at a constant **+4252** rather than 0.
+
+`rtl/m72.v` mixes a sample-DAC path into the output:
+
+```verilog
+wire [7:0] signed_mcu_sample = ( m84 ? z80_sample_out : mcu_sample_out ) - 8'h80;
+... samples_lpf( .input_l({signed_mcu_sample[7:0], 8'd0}), .output_l(filtered_mcu_sample) );
+audio_out <= filtered_ym_audio + filtered_mcu_sample;
+```
+
+The DAC code is unsigned and centred on `8'h80`, so `- 8'h80` makes it signed.
+But on a board with no sample DAC fitted the source never reaches that centre:
+R-Type has no MCU, so `mcu_sample_out` is the nu8051's port-1 register, which
+resets to `8'hFF` per the 8051 spec and is never written. `0xFF - 0x80 = +127`,
+full scale, straight through `samples_lpf` to the output as a constant. The M84
+path has the mirror-image problem: `sound.sv`'s `sample_out` had no reset value,
+so it powered up at 0 and gave `-128` until the Z80's first sample write.
+
+R-Type is the only supported set that loads no sample region, so the fix is
+gated on that: `m72.v` latches `samples_present` from the sample region's own
+download strobe (`bram_wr & bram_cs[1]` - the same expression that writes the
+sample ROM, so the flag sets iff any sample data arrived) and holds the DAC at
+the silence code when it never did. `sound.sv`'s `sample_out` now resets to
+`8'h80` as well.
+
+Idle output is exactly 0 after the fix. Every previously captured sound is
+bit-identical once 4252 is subtracted, so nothing but the offset changed.

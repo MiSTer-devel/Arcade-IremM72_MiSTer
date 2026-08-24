@@ -1356,7 +1356,24 @@ sample_rom #(.SS_IDX(SSIDX_SAMPLE)) sample_rom(
     .ssbus(ssb[SSIDX_SAMPLE])
 );
 
-wire [7:0] signed_mcu_sample = ( m84 ? z80_sample_out : mcu_sample_out ) - 8'h80;
+// Sample DAC.  The MCU (port 1) / M84 Z80 sample port is an unsigned code
+// centred on 8'h80, so `- 8'h80` makes it signed.  Boards with no sample DAC
+// fitted -- R-Type is the only supported set -- load no sample region, yet
+// those ports still idle at a non-silent code: the 8051's port 1 resets to
+// 8'hFF, which becomes a full-scale +127 and lands on the output as a constant
+// DC through samples_lpf.  Hold the DAC at the silence code unless a sample
+// region was actually downloaded.  (`samples_present` is a load-time constant
+// written in the clk_bram domain and read here, exactly like `mcu_emulator`'s
+// `active`; it settles long before the core leaves reset.  Like `rom.sv`'s own
+// `stage = BOARD_CFG`, it relies on power-on initialisation - MiSTer reloads
+// the bitstream when a different MRA is selected, so each ROM load starts from
+// a fresh configuration.)
+reg samples_present = 0;
+always @(posedge clk_bram) if (bram_wr & bram_cs[1]) samples_present <= 1;
+
+wire [7:0] sample_dac = samples_present ? ( m84 ? z80_sample_out : mcu_sample_out )
+                                        : 8'h80;
+wire [7:0] signed_mcu_sample = sample_dac - 8'h80;
 reg [2:0] ce_filter_counter = 0;
 wire ce_filter = &ce_filter_counter;
 reg [15:0] filtered_mcu_sample;

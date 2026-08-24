@@ -41,7 +41,7 @@ module sound (
     output reg sample_inc,
     output reg [15:0] sample_addr,
     output reg [1:0] sample_addr_wr,
-    output reg [7:0] sample_out,
+    output reg [7:0] sample_out = 8'h80,
     input [7:0] sample_in,
 
     input SDBEN,
@@ -306,6 +306,10 @@ always @(posedge CLK_32M) begin
     if (reset) begin
         m84_nmi <= 0;
         nmi_counter <= 0;
+        // Silence code, not 0: sample_out feeds the DAC through `- 8'h80` in
+        // m72.v, so powering up at 0 would put a full-scale -128 DC on the
+        // output until the Z80 writes its first sample.
+        sample_out <= 8'h80;
     end else if (~pause) begin
 
         nmi_counter <= nmi_counter + 12'd1;
