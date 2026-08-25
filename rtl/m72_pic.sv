@@ -147,9 +147,26 @@ always_ff @(posedge clk or posedge reset) begin
             // previous version effectively did, by skipping the whole scan
             // while busy) silently drops any edge that arrives before the
             // pending request is acknowledged.
+            //
+            // A request that is withdrawn again before the CPU acknowledges
+            // it is cancelled, not remembered - this is the behaviour behind
+            // the controller's "default level" note (an INTP input that goes
+            // inactive before the INTAK sequence is reported as the default
+            // interrupt, i.e. the pending bit is gone by then). It matters
+            // here because INTP2, the KNA70H015 raster match, is only
+            // asserted for the ~15us window the INT_D PROM opens on the
+            // matching line, and drops immediately whenever the CPU
+            // reprograms ISET. X Multiply parks the raster line at VE 384 -
+            // inside VBLANK, on the same line as INTP0 - so the vblank ISR
+            // is still running (interrupts off) when the raster pulse comes
+            // and goes. Latching it forever meant its `sti` at 0x00fe let
+            // the raster ISR run, which reloaded layer A's scroll from an
+            // all-zero table and slid the title-screen text 64px left and
+            // 128px up.
             for (int p = 0; p < 8; p = p + 1) begin
                 if (edge_triggered) begin
                     if (intp[p] & ~intp_latch[p]) IRR[p] <= 1;
+                    else if (~intp[p]) IRR[p] <= 0;
                 end else begin
                     IRR[p] <= intp[p];
                 end
@@ -161,6 +178,12 @@ always_ff @(posedge clk or posedge reset) begin
                     // Accepted: this request is resolved (datasheet: "sets
                     // bit n of ISR; resets bit n of IRR" at INTAK-complete).
                     IRR[int_vector[2:0]] <= 0;
+                end else if (~IRR[int_vector[2:0]] | IMW[int_vector[2:0]]) begin
+                    // The request that raised INT went away (withdrawn above,
+                    // or masked) before the CPU got round to it: lower INT
+                    // again rather than hand the CPU a stale vector once it
+                    // re-enables interrupts.
+                    int_req <= 0;
                 end
             end else begin
                 // Priority scan over the live IRR, lowest index = highest
