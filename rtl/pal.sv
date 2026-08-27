@@ -42,10 +42,11 @@ module address_translator
     output bg_a_memrq, // CHARA
     output bg_b_memrq, // CHARA
     output bg_palette_memrq, // CHARA_P
-    
-    output sprite_memrq, // 
+
+    output sprite_memrq, //
     output sprite_palette_memrq, // OBJ_P
     output sound_memrq,
+    output logic work_ram_memrq, // CPU work RAM (block RAM, not SDRAM)
 
     output sprite_dma,
     output [1:0] iset,
@@ -55,14 +56,18 @@ module address_translator
     output snd_latch2_wr
 );
 
-    assign snd_latch1_wr = ~M_IO & wr & ( A[7:0] == 8'h00 );
-    assign snd_latch2_wr = (board_cfg.m84) ? 1'b0 : ( ~M_IO & wr & ( A[7:0] == 8'hc0));
+    assign snd_latch1_wr = ~M_IO & wr & ( A[7:1] == 7'h00 ) & bytesel[0];
+    assign snd_latch2_wr = (board_cfg.m84) ? 1'b0 : ( ~M_IO & wr & ( A[7:1] == 7'h60 ) & bytesel[0]);
     
+    // Work RAM lives in block RAM (savestate-friendly, no SDRAM stall);
+    // SDRAM (ls245_en) only serves CPU ROM fetches now.
     always_comb begin
+        work_ram_memrq = 0;
+
         case (board_cfg.memory_map)
         0: begin
             casex (A[19:16])
-            4'b010x: begin ls245_en = DBEN & M_IO; writable = 1; sdr_addr = REGION_CPU_RAM.base_addr[24:0] | A[16:0]; end
+            4'b010x: begin ls245_en = 0; writable = 0; sdr_addr = 24'd0; work_ram_memrq = M_IO; end
             4'b00xx: begin ls245_en = DBEN & M_IO; writable = 0; sdr_addr = REGION_CPU_ROM.base_addr[24:0] | A[17:0]; end
             4'b1111: begin ls245_en = DBEN & M_IO; writable = 0; sdr_addr = REGION_CPU_ROM.base_addr[24:0] | A[17:0]; end
             default: begin ls245_en = 0; writable = 0; sdr_addr = 24'd0; end
@@ -70,7 +75,7 @@ module address_translator
         end
         1: begin
             casex (A[19:16])
-            4'b1010: begin ls245_en = DBEN & M_IO; writable = 1; sdr_addr = REGION_CPU_RAM.base_addr[24:0] | A[16:0]; end
+            4'b1010: begin ls245_en = 0; writable = 0; sdr_addr = 24'd0; work_ram_memrq = M_IO; end
             4'b0xxx: begin ls245_en = DBEN & M_IO; writable = 0; sdr_addr = REGION_CPU_ROM.base_addr[24:0] | A[18:0]; end
             4'b1111: begin ls245_en = DBEN & M_IO; writable = 0; sdr_addr = REGION_CPU_ROM.base_addr[24:0] | A[18:0]; end
             default: begin ls245_en = 0; writable = 0; sdr_addr = 24'd0; end
@@ -78,7 +83,7 @@ module address_translator
         end
         2: begin
             casex (A[19:16])
-            4'b100x: begin ls245_en = DBEN & M_IO; writable = 1; sdr_addr = REGION_CPU_RAM.base_addr[24:0] | A[16:0]; end
+            4'b100x: begin ls245_en = 0; writable = 0; sdr_addr = 24'd0; work_ram_memrq = M_IO; end
             4'b0xxx: begin ls245_en = DBEN & M_IO; writable = 0; sdr_addr = REGION_CPU_ROM.base_addr[24:0] | A[18:0]; end
             4'b1111: begin ls245_en = DBEN & M_IO; writable = 0; sdr_addr = REGION_CPU_ROM.base_addr[24:0] | A[18:0]; end
             default: begin ls245_en = 0; writable = 0; sdr_addr = 24'd0; end
@@ -87,7 +92,7 @@ module address_translator
 
         3,4: begin
             casex (A[19:16])
-            4'b1110: begin ls245_en = DBEN & M_IO; writable = 1; sdr_addr = REGION_CPU_RAM.base_addr[24:0] | A[16:0]; end
+            4'b1110: begin ls245_en = 0; writable = 0; sdr_addr = 24'd0; work_ram_memrq = M_IO; end
             4'b0xxx: begin ls245_en = DBEN & M_IO; writable = 0; sdr_addr = REGION_CPU_ROM.base_addr[24:0] | A[18:0]; end
             4'b1111: begin ls245_en = DBEN & M_IO; writable = 0; sdr_addr = REGION_CPU_ROM.base_addr[24:0] | A[18:0]; end
             default: begin ls245_en = 0; writable = 0; sdr_addr = 24'd0; end
@@ -99,7 +104,7 @@ module address_translator
             writable = 0;
             sdr_addr = 0;
         end
-            
+
         endcase
     end
 
@@ -171,27 +176,24 @@ module address_translator
         iset_data = 16'd0;
         iset = 2'b00;
 
-        // M84
+        // M84 (memory-mapped iset at 0xb0000). The word-aligned bus delivers
+        // both bytes in one access; iset carries the real byte-enables and
+        // iset_data the full 16-bit word (kna70h015 loads [7:0] and bit8).
         if (board_cfg.m84) begin
             if (M_IO & wr) begin
-                sprite_dma = A == 20'hbc000;
+                sprite_dma = (A == 20'hbc000) & bytesel[0];
                 if (A == 20'hb0000) begin
                     iset = bytesel;
                     iset_data = data;
-                end else if (A == 20'hb0001) begin
-                    iset = 2'b10;
-                    iset_data = { data[7:0], 8'h00 };
                 end
             end
         end else begin
+            // M72: iset lives in the 16-bit IO word at 0x06.
             if (!M_IO & wr) begin
-                sprite_dma = A == 8'h04;
-                if (A == 8'h06) begin
-                    iset = 2'b01;
-                    iset_data = { 8'h00, data[7:0] };
-                end else if (A == 8'h07) begin
-                    iset = 2'b10;
-                    iset_data = { data[7:0], 8'h00 };
+                sprite_dma = (A[7:1] == 7'h02) & bytesel[0];
+                if (A[7:1] == 7'h03) begin
+                    iset = bytesel;
+                    iset_data = data;
                 end
             end
         end

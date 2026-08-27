@@ -1,0 +1,10 @@
+obj/
+verilated/
+sim
+*.fst
+*.wav
+*.png
+imgui.ini
+m72_sim_window.ini
+states/
+screenshots/

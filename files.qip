@@ -22,16 +22,43 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/hiscore.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/mcu.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/mcu_emulator.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/dualport_mailbox.sv
-set_global_assignment -name SYSTEMVERILOG_FILE rtl/ddr_debug.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/m72_pic.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/ram.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/savestates.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/memory_stream.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/ddram.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/savestate_ui.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/joy_db15.sv
 
-set_global_assignment -name VHDL_FILE rtl/v30/export.vhd
-set_global_assignment -name VHDL_FILE rtl/v30/bus_savestates.vhd
-set_global_assignment -name VHDL_FILE rtl/v30/reg_savestates.vhd
-set_global_assignment -name VHDL_FILE rtl/v30/cpu.vhd
-set_global_assignment -name VHDL_FILE rtl/v30/divider.vhd
+set_global_assignment -name SEARCH_PATH rtl/v30
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/v30/v30u_ss_pkg.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/v30/v30_core.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/v30/v30u_biu.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/v30/v30u_ucrom.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/v30/v30u_eu.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/v30/v30_bus.sv
 
-set_global_assignment -name QIP_FILE rtl/jt51/jt51.qip
-set_global_assignment -name QIP_FILE rtl/T80/T80.qip
-set_global_assignment -name QIP_FILE rtl/8051/mc8051.qip
+set_global_assignment -name SEARCH_PATH rtl/nu8051
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/nu8051/nu8051_ss_pkg.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/nu8051/nu8051_core.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/nu8051/nu8051_seq.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/nu8051/nu8051_alu.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/nu8051/nu8051_iram.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/nu8051/nu8051_sfr.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/nu8051/nu8051_ports.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/nu8051/nu8051_timer.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/nu8051/nu8051_uart.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/nu8051/nu8051_irq.sv
 
+if (1) {
+    set_global_assignment -name VERILOG_MACRO "USE_AUTO_SS=1"
+    set_global_assignment -name SYSTEMVERILOG_FILE rtl/tv80_auto_ss.sv
+    set_global_assignment -name SYSTEMVERILOG_FILE rtl/jt51_auto_ss.sv
+} else {
+    set_global_assignment -name VERILOG_FILE rtl/tv80/tv80s.v
+    set_global_assignment -name VERILOG_FILE rtl/tv80/tv80_core.v
+    set_global_assignment -name VERILOG_FILE rtl/tv80/tv80_alu.v
+    set_global_assignment -name VERILOG_FILE rtl/tv80/tv80_mcode.v
+    set_global_assignment -name VERILOG_FILE rtl/tv80/tv80_reg.v
+    set_global_assignment -name QIP_FILE rtl/jt51/jt51.qip
+}

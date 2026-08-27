@@ -18,7 +18,9 @@
 //  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 //============================================================================
 
-module m72_pic(
+module m72_pic #(
+    parameter SS_IDX = -1
+) (
     input clk,
     input ce,
     input reset,
@@ -31,19 +33,22 @@ module m72_pic(
     input [7:0] din,
 
     output reg int_req,
-    output reg [8:0] int_vector,
+    output reg [7:0] int_vector,
     input int_ack,
 
-    input [7:0] intp
+    input [7:0] intp,
+
+    ssbus_if.slave ssbus
 );
 
-enum {
+typedef enum bit [2:0] {
     UNINIT,
     INIT_IW2,
     INIT_IW3,
     INIT_IW4,
     INIT_DONE
-} init_state = UNINIT;
+} state_t;
+state_t init_state = UNINIT;
 
 reg [7:0] IW1, IW2, IW3, IW4;
 reg [7:0] IMW, IRR, ISR;
@@ -66,6 +71,23 @@ always_ff @(posedge clk or posedge reset) begin
         init_state <= UNINIT;
         int_req <= 0;
         intp_latch <= 0;
+        IRR <= 0;
+    end else if (ssbus.access(SS_IDX) & ssbus.write) begin
+        // Savestate restore writes (the ce-gated body below is frozen)
+        case (ssbus.addr[3:0])
+        4'd0: IW1 <= ssbus.data[7:0];
+        4'd1: IW2 <= ssbus.data[7:0];
+        4'd2: IW3 <= ssbus.data[7:0];
+        4'd3: IW4 <= ssbus.data[7:0];
+        4'd4: IMW <= ssbus.data[7:0];
+        4'd5: PFCW <= ssbus.data[7:0];
+        4'd6: MCW <= ssbus.data[7:0];
+        4'd7: IRR <= ssbus.data[7:0];
+        4'd8: ISR <= ssbus.data[7:0];
+        4'd9: intp_latch <= ssbus.data[7:0];
+        4'd10: init_state <= state_t'(ssbus.data[2:0]);
+        default: {int_req, int_vector} <= ssbus.data[8:0];
+        endcase
     end else if (ce) begin
         if (cs & wr) begin
             if (~a0) begin
@@ -111,31 +133,103 @@ always_ff @(posedge clk or posedge reset) begin
         if (init_state == INIT_DONE) begin
             intp_latch <= intp;
 
+            // IRR is a real, always-live request-pending register: the
+            // datasheet has it latch every qualifying request independent of
+            // whether a prior interrupt is still awaiting acknowledgment
+            // ("IRR bit is not latched until the CPU returns an INTAK
+            // pulse... to send the next interrupt request, temporarily lower
+            // the INTP input, then raise it" - i.e. edges are captured any
+            // time, not just while idle). Self-FI mode (the only mode this
+            // core's games use, confirmed by disassembly - no game issues an
+            // FI/EOI write) provides no in-service blocking at all per the
+            // datasheet, so IRR is the only thing standing between a real
+            // edge and a lost one; gating this update on `~int_req` (as the
+            // previous version effectively did, by skipping the whole scan
+            // while busy) silently drops any edge that arrives before the
+            // pending request is acknowledged.
+            //
+            // A request that is withdrawn again before the CPU acknowledges
+            // it is cancelled, not remembered - this is the behaviour behind
+            // the controller's "default level" note (an INTP input that goes
+            // inactive before the INTAK sequence is reported as the default
+            // interrupt, i.e. the pending bit is gone by then). It matters
+            // here because INTP2, the KNA70H015 raster match, is only
+            // asserted for the ~15us window the INT_D PROM opens on the
+            // matching line, and drops immediately whenever the CPU
+            // reprograms ISET. X Multiply parks the raster line at VE 384 -
+            // inside VBLANK, on the same line as INTP0 - so the vblank ISR
+            // is still running (interrupts off) when the raster pulse comes
+            // and goes. Latching it forever meant its `sti` at 0x00fe let
+            // the raster ISR run, which reloaded layer A's scroll from an
+            // all-zero table and slid the title-screen text 64px left and
+            // 128px up.
+            for (int p = 0; p < 8; p = p + 1) begin
+                if (edge_triggered) begin
+                    if (intp[p] & ~intp_latch[p]) IRR[p] <= 1;
+                    else if (~intp[p]) IRR[p] <= 0;
+                end else begin
+                    IRR[p] <= intp[p];
+                end
+            end
+
             if (int_req) begin
                 if (int_ack) begin
                     int_req <= 0;
+                    // Accepted: this request is resolved (datasheet: "sets
+                    // bit n of ISR; resets bit n of IRR" at INTAK-complete).
+                    IRR[int_vector[2:0]] <= 0;
+                end else if (~IRR[int_vector[2:0]] | IMW[int_vector[2:0]]) begin
+                    // The request that raised INT went away (withdrawn above,
+                    // or masked) before the CPU got round to it: lower INT
+                    // again rather than hand the CPU a stale vector once it
+                    // re-enables interrupts.
+                    int_req <= 0;
                 end
             end else begin
-                bit [7:0] trig;
+                // Priority scan over the live IRR, lowest index = highest
+                // priority. Only stop on an actually-servable (pending and
+                // unmasked) bit - a masked or not-yet-pending lower-priority
+                // bit must not block a higher-numbered one from being seen.
                 int p;
                 bit t;
 
-                if (edge_triggered)
-                    trig = intp & ~intp_latch;
-                else
-                    trig = intp;
-                
                 t = 0;
                 for( p = 0; p < 8 && !t; p = p + 1 ) begin
-                    if (intp[p]) begin
-                        if (trig[p] & ~IMW[p]) begin
-                            int_req <= 1;
-                            int_vector <= {IW2[6:3], p[2:0], 2'b00};
-                        end
+                    if (IRR[p] & ~IMW[p]) begin
+                        int_req <= 1;
+                        // Full 8-bit vector NUMBER (was a byte offset that
+                        // dropped IW2[7] and appended 2'b00 for the VHDL core).
+                        int_vector <= {IW2[7:3], p[2:0]};
                         t = 1;
                     end
                 end
             end
+        end
+    end
+end
+
+// Savestate slave: enumeration, reads and acks (writes live above)
+always_ff @(posedge clk) begin
+    ssbus.setup(SS_IDX, 12, 1);
+
+    if (ssbus.access(SS_IDX)) begin
+        if (ssbus.write) begin
+            ssbus.write_ack(SS_IDX);
+        end else if (ssbus.read) begin
+            case (ssbus.addr[3:0])
+            4'd0: ssbus.read_response(SS_IDX, { 56'd0, IW1 });
+            4'd1: ssbus.read_response(SS_IDX, { 56'd0, IW2 });
+            4'd2: ssbus.read_response(SS_IDX, { 56'd0, IW3 });
+            4'd3: ssbus.read_response(SS_IDX, { 56'd0, IW4 });
+            4'd4: ssbus.read_response(SS_IDX, { 56'd0, IMW });
+            4'd5: ssbus.read_response(SS_IDX, { 56'd0, PFCW });
+            4'd6: ssbus.read_response(SS_IDX, { 56'd0, MCW });
+            4'd7: ssbus.read_response(SS_IDX, { 56'd0, IRR });
+            4'd8: ssbus.read_response(SS_IDX, { 56'd0, ISR });
+            4'd9: ssbus.read_response(SS_IDX, { 56'd0, intp_latch });
+            4'd10: ssbus.read_response(SS_IDX, { 61'd0, init_state });
+            default: ssbus.read_response(SS_IDX, { 55'd0, int_req, int_vector });
+            endcase
         end
     end
 end

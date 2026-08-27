@@ -35,12 +35,11 @@ Many people, knowingly or not, contributed to this work.
 - @Ace9921 because I used a lot of his TimePilot'84 code as an example for hooking up inputs and dipswitches
 - The people from PLD Archive and https://www.jammarcade.net/ for collecting and archiving schematics and PAL information http://wiki.pldarchive.co.uk/index.php?title=R-Type_(M72)
 - @sorgelig for developing and maintaining MiSTer
-- @RobertPeip for the v30mz cpu I am using as the basis for the v30
+- @RobertPeip for the original v30mz CPU integration
 - @sentientsixp for encouraging me to do this
 - @atrac17 for schematics and MRAs
 - @tdlabac for help with MCU emulation
 - @_ShootTheCore for providing audio captures from original M72 hardware
 - @gyurco for fixes, optimizations and Hammerin' Harry support.
 - The MiSTer FPGA discord server for the helpful advice and support
-
 

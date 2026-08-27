@@ -64,4 +64,36 @@ package m72_pkg;
         VIDEO_60HZ = 2'd3
     } video_timing_t;
 
+    // Savestate section indices (ssbus chunk ids). R-Type scope: hardware the
+    // game doesn't use (MCU, samples, mailbox) has no section.
+    parameter int SSIDX_GLOBAL        = 0;   // m72.v: sys_flags, CE counters, paused_v/h
+    parameter int SSIDX_WORK_RAM      = 1;   // 64K x 16 CPU work RAM
+    parameter int SSIDX_V30           = 2;   // 228 x 16 v30_core ucore register file
+    parameter int SSIDX_Z80           = 3;   // tv80_auto_ss via auto_save_adaptor2
+    parameter int SSIDX_SOUND_RAM     = 4;   // 64KB Z80 program/work RAM
+    parameter int SSIDX_SOUND_REGS    = 5;
+    parameter int SSIDX_SPRITE_RAM_L  = 6;   // 512 x 8
+    parameter int SSIDX_SPRITE_RAM_H  = 7;
+    parameter int SSIDX_SPRITE_OBJRAM = 8;   // 128 x 64 post-DMA sprite table
+    parameter int SSIDX_SPRITE_REGS   = 9;
+    parameter int SSIDX_LAYER_A_RAM0  = 10;  // ..RAM3 = 13
+    parameter int SSIDX_LAYER_A_REGS  = 14;
+    parameter int SSIDX_LAYER_B_RAM0  = 15;  // ..RAM3 = 18
+    parameter int SSIDX_LAYER_B_REGS  = 19;
+    parameter int SSIDX_PAL_BG        = 20;  // kna91h014 in board_b_d
+    parameter int SSIDX_PAL_OBJ       = 21;  // kna91h014 in m72.v
+    parameter int SSIDX_CRTC          = 22;  // kna70h015
+    parameter int SSIDX_PIC           = 23;  // m72_pic
+    parameter int SSIDX_JT51          = 24;  // jt51_auto_ss via auto_save_adaptor2
+    parameter int SSIDX_MCU_CPU       = 25;  // nu8051 core (linear SS window) + wrapper glue, rtl/mcu.sv
+    parameter int SSIDX_MCU_MAILBOX   = 26;  // dualport_mailbox 2Kx16 + int handshake
+    parameter int SSIDX_SAMPLE        = 27;  // sample_rom 18-bit playback pointer
+    parameter int SSIDX_MCU_EMU       = 28;  // mcu_emulator HLE runtime regs
+    parameter int SSIDX_VERSION       = 29;  // build stamp
+    parameter int SSIDX_COUNT         = 30;
+
+    // DDR window for savestate slots: 4 slots x 4MB from this base
+    // (save_state_data hardcodes index * 0x400000, length 0x400000)
+    parameter bit [31:0] SS_DDR_BASE  = 32'h3E00_0000;
+
 endpackage

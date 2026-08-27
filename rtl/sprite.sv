@@ -48,7 +48,13 @@ module sprite (
     input [63:0] sdr_data,
     output [24:0] sdr_addr,
     output sdr_req,
-    input sdr_rdy
+    input sdr_rdy,
+
+    // savestates: pre-DMA buffer RAMs, post-DMA object table, DMA state
+    ssbus_if.slave ssbus_ram_l,
+    ssbus_if.slave ssbus_ram_h,
+    ssbus_if.slave ssbus_objram,
+    ssbus_if.slave ssbus_regs
 );
 
 wire [7:0] dout_h, dout_l;
@@ -56,44 +62,82 @@ wire [7:0] dout_h, dout_l;
 assign DOUT = { dout_h, dout_l };
 assign DOUT_VALID = MRD & BUFDBEN;
 
-dpramv #(.widthad_a(9)) ram_h
+// Savestate access hijacks the DMA read port (B); the quiesce condition
+// guarantees the DMA is idle (TNSL) whenever these are active.
+wire [8:0] ram_addr_b[2];
+wire [7:0] ram_data_b[2];
+wire       ram_wren_b[2];
+
+ram_ss_adaptor #(.WIDTH(8), .WIDTHAD(9), .SS_IDX(SSIDX_SPRITE_RAM_H)) ram_h_ss(
+    .clk(CLK_32M),
+    .wren_in(1'd0), .addr_in(dma_rd_addr[8:0]), .data_in(8'd0),
+    .wren_out(ram_wren_b[1]), .addr_out(ram_addr_b[1]), .data_out(ram_data_b[1]),
+    .q(dma_h),
+    .ssbus(ssbus_ram_h)
+);
+
+ram_ss_adaptor #(.WIDTH(8), .WIDTHAD(9), .SS_IDX(SSIDX_SPRITE_RAM_L)) ram_l_ss(
+    .clk(CLK_32M),
+    .wren_in(1'd0), .addr_in(dma_rd_addr[8:0]), .data_in(8'd0),
+    .wren_out(ram_wren_b[0]), .addr_out(ram_addr_b[0]), .data_out(ram_data_b[0]),
+    .q(dma_l),
+    .ssbus(ssbus_ram_l)
+);
+
+dualport_ram_unreg #(.WIDTHAD(9)) ram_h
 (
     .clock_a(CLK_32M),
     .address_a(A[9:1]),
     .q_a(dout_h),
-    .wren_a(MWR & BUFDBEN),
+    // CPU write deferred past DMA: the CPU is READY-stalled while ~TNSL, so
+    // gating on TNSL lands the write only once the DMA snapshot has completed.
+    .wren_a(MWR & BUFDBEN & TNSL),
     .data_a(DIN[15:8]),
 
     .clock_b(CLK_32M),
-    .address_b(dma_rd_addr),
-    .data_b(),
-    .wren_b(0),
+    .address_b(ram_addr_b[1]),
+    .data_b(ram_data_b[1]),
+    .wren_b(ram_wren_b[1]),
     .q_b(dma_h)
 );
 
-dpramv #(.widthad_a(9)) ram_l
+dualport_ram_unreg #(.WIDTHAD(9)) ram_l
 (
     .clock_a(CLK_32M),
     .address_a(A[9:1]),
     .q_a(dout_l),
-    .wren_a(MWR & BUFDBEN),
+    .wren_a(MWR & BUFDBEN & TNSL),   // see ram_h: CPU write deferred past DMA
     .data_a(DIN[7:0]),
 
     .clock_b(CLK_32M),
-    .address_b(dma_rd_addr),
-    .data_b(),
-    .wren_b(0),
+    .address_b(ram_addr_b[0]),
+    .data_b(ram_data_b[0]),
+    .wren_b(ram_wren_b[0]),
     .q_b(dma_l)
 );
 
-reg [63:0] objram[128];
+reg [63:0] objram[128] /* verilator public_flat */;
 
 reg [7:0] dma_l, dma_h;
 reg [10:0] dma_counter;
 wire [9:0] dma_rd_addr = dma_counter[10:1];
 
+// objram must stay inferrable as block RAM, which means one write port. The
+// DMA write and the savestate restore write share it (the DMA is idle
+// whenever the ssbus is here); the two read addresses - the object fetch and
+// the savestate read - are what an M10K pair can already supply.
+reg [7:0] dma_b[6];
+wire ss_objram_wr = ssbus_objram.access(SSIDX_SPRITE_OBJRAM) & ssbus_objram.write;
+wire dma_objram_wr = ~TNSL & (dma_counter[2:0] == 3'b111);
+wire [6:0] objram_waddr = ss_objram_wr ? ssbus_objram.addr[6:0] : dma_counter[10:3];
+wire [63:0] objram_wdata = ss_objram_wr ? ssbus_objram.data :
+    { dma_h, dma_l, dma_b[5], dma_b[4], dma_b[3], dma_b[2], dma_b[1], dma_b[0] };
+
 always_ff @(posedge CLK_32M) begin
-    reg [7:0] b[6];
+    if (ss_objram_wr | dma_objram_wr) objram[objram_waddr] <= objram_wdata;
+end
+
+always_ff @(posedge CLK_32M) begin
     if (DMA_ON & TNSL) begin
         TNSL <= 0;
         dma_counter <= 11'd0;
@@ -102,22 +146,62 @@ always_ff @(posedge CLK_32M) begin
     if (~TNSL) begin
         case (dma_counter[2:0])
         3'b001: begin
-            b[0] <= dma_l;
-            b[1] <= dma_h;
+            dma_b[0] <= dma_l;
+            dma_b[1] <= dma_h;
         end
         3'b011: begin
-            b[2] <= dma_l;
-            b[3] <= dma_h;
+            dma_b[2] <= dma_l;
+            dma_b[3] <= dma_h;
         end
         3'b101: begin
-            b[4] <= dma_l;
-            b[5] <= dma_h;
+            dma_b[4] <= dma_l;
+            dma_b[5] <= dma_h;
         end
-        3'b111: objram[dma_counter[10:3]] <= { dma_h, dma_l, b[5], b[4], b[3], b[2], b[1], b[0] };
+        default: ;
         endcase
 
         dma_counter <= dma_counter + 11'd1;
         if (dma_counter == 11'h3ff) TNSL <= 1;
+    end
+
+    // Savestate restore of the DMA state (DMA is idle whenever this is active)
+    if (ssbus_regs.access(SSIDX_SPRITE_REGS) & ssbus_regs.write)
+        {TNSL, dma_counter} <= ssbus_regs.data[11:0];
+end
+
+// Savestate slaves: post-DMA object table (64-bit entries) and DMA state.
+// Writes live in the DMA block above; these blocks enumerate, read and ack.
+reg [63:0] ss_objram_rdata;
+reg ss_objram_read_delay;
+
+always_ff @(posedge CLK_32M) begin
+    ss_objram_rdata <= objram[ssbus_objram.addr[6:0]];
+
+    ssbus_objram.setup(SSIDX_SPRITE_OBJRAM, 128, 3);
+
+    if (ssbus_objram.access(SSIDX_SPRITE_OBJRAM)) begin
+        if (ssbus_objram.write) begin
+            ssbus_objram.write_ack(SSIDX_SPRITE_OBJRAM);
+        end else if (ssbus_objram.read) begin
+            if (ss_objram_read_delay) begin
+                ssbus_objram.read_response(SSIDX_SPRITE_OBJRAM, ss_objram_rdata);
+            end
+            ss_objram_read_delay <= 1;
+        end
+    end else begin
+        ss_objram_read_delay <= 0;
+    end
+end
+
+always_ff @(posedge CLK_32M) begin
+    ssbus_regs.setup(SSIDX_SPRITE_REGS, 1, 1);
+
+    if (ssbus_regs.access(SSIDX_SPRITE_REGS)) begin
+        if (ssbus_regs.write) begin
+            ssbus_regs.write_ack(SSIDX_SPRITE_REGS);
+        end else if (ssbus_regs.read) begin
+            ssbus_regs.read_response(SSIDX_SPRITE_REGS, { 52'd0, TNSL, dma_counter });
+        end
     end
 end
 
@@ -230,10 +314,17 @@ always_ff @(posedge CLK_96M) begin
             sdr_wait <= 1;
         end
         4: begin
-            line_buffer_in <= deswizzle(sdr_data, obj_flipx);
             if (line_buffer_req != line_buffer_ack)
                 st <= st; // wait
             else begin
+                // Latch the pixel data only at the commit: the line buffer
+                // reads data_in when it *services* the request (up to 16
+                // clocks later), and by then the walker has already fetched
+                // the next column - re-latching every cycle handed columns
+                // the following column's graphics whenever the SDRAM fetch
+                // beat the buffer's drain (rarely on hardware, always with
+                // the sim's fast SDRAM model).
+                line_buffer_in <= deswizzle(sdr_data, obj_flipx);
                 line_buffer_color <= obj_color;
                 line_buffer_x <= obj_org_x + ( 10'd16 * span );
                 line_buffer_req <= ~line_buffer_ack;

@@ -12,7 +12,7 @@
 
     <joystick>8-way</joystick>
     <num_buttons>1</num_buttons>
-    <buttons default="B,R,L" names="Fire,-,-,-,Start,Coin,P2 Start,Pause"></buttons>
+    <buttons default="B,Start,Select,R,L" names="Fire,-,-,-,Start,Coin,Pause,SS,P2 Start"></buttons>
     <switches default="00 02">
         <dip bits="0,1" ids="Normal,Very Easy,Easy,Hard" name="Difficulty"></dip>
         <dip bits="2,3" ids="3,1,2,4" name="Lives"></dip>

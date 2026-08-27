@@ -1,0 +1,12 @@
+CompileFlags:
+  Add:
+    - -std=gnu++17
+    - -I.
+    - -Iverilated
+    - -Iimgui
+    - -Iimgui/backends
+    - -I/opt/homebrew/Cellar/verilator/5.048/share/verilator/include
+    - -I/opt/homebrew/Cellar/verilator/5.048/share/verilator/include/vltstd
+    - -I/opt/homebrew/include/SDL2
+    - -I/opt/homebrew/include
+    - -DHAVE_CAPSTONE

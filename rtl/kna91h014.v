@@ -18,7 +18,9 @@
 //  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 //============================================================================
 
-module kna91h014 (
+module kna91h014 #(
+    parameter SS_IDX = -1
+) (
     input CLK_32M,
 
     input [7:0] CB,	// Pins 3-10.
@@ -42,7 +44,9 @@ module kna91h014 (
 
     output reg [4:0] RED,	// Pins 47-43.
     output reg [4:0] GRN,	// Pins 42-40, 37-36.
-    output reg [4:0] BLU	// Pins 35-31.
+    output reg [4:0] BLU,	// Pins 35-31.
+
+    ssbus_if.slave ssbus
 );
 
 wire [7:0] A_IN = A[8:1];
@@ -76,22 +80,31 @@ reg [4:0] red_lat;
 reg [4:0] grn_lat;
 reg [4:0] blu_lat;
 
+// Savestate access hijacks the CPU port rather than adding a third address to
+// each array: the arrays already carry two read addresses (CPU + video), which
+// is all an M10K can supply.  A third one would force all three planes into
+// registers (~4.6k ALMs).  The CPU is quiesced whenever the ssbus is here, so
+// A_IN/ram_wr_* are inert and red/grn/blu_lat double as the ss read data.
+wire ss_access = ssbus.access(SS_IDX);
+wire [7:0] pal_addr = ss_access ? ssbus.addr[7:0] : A_IN;
+wire ss_wr = ss_access & ssbus.write;
+
 always @(posedge CLK_32M)
 begin
-    if (ram_wr_a)
-        ram_a[A_IN] <= DIN[4:0];
+    if (ram_wr_a | ss_wr)
+        ram_a[pal_addr] <= ss_wr ? ssbus.data[4:0] : DIN[4:0];
     else
-        red_lat <= ram_a[A_IN];
+        red_lat <= ram_a[pal_addr];
 
-    if (ram_wr_b)
-        ram_b[A_IN] <= DIN[4:0];
+    if (ram_wr_b | ss_wr)
+        ram_b[pal_addr] <= ss_wr ? ssbus.data[9:5] : DIN[4:0];
     else
-        grn_lat <= ram_b[A_IN];
+        grn_lat <= ram_b[pal_addr];
 
-    if (ram_wr_c)
-        ram_c[A_IN] <= DIN[4:0];
+    if (ram_wr_c | ss_wr)
+        ram_c[pal_addr] <= ss_wr ? ssbus.data[14:10] : DIN[4:0];
     else
-        blu_lat <= ram_c[A_IN];
+        blu_lat <= ram_c[pal_addr];
 end
 
 // DOUT read driver...
@@ -108,6 +121,29 @@ always @(posedge CLK_32M) begin
         RED <= ram_a[color_addr];
         GRN <= ram_b[color_addr];
         BLU <= ram_c[color_addr];
+    end
+end
+
+// Savestate slave: streams the three 5-bit palette planes as one 16-bit word
+// per entry ({0, blu, grn, red}).  The array accesses ride the CPU port above,
+// so the read data arrives in the *_lat registers; this block enumerates,
+// responds and acks.
+reg ss_read_delay;
+
+always @(posedge CLK_32M) begin
+    ssbus.setup(SS_IDX, 256, 1);
+
+    if (ssbus.access(SS_IDX)) begin
+        if (ssbus.write) begin
+            ssbus.write_ack(SS_IDX);
+        end else if (ssbus.read) begin
+            if (ss_read_delay) begin
+                ssbus.read_response(SS_IDX, { 49'd0, blu_lat, grn_lat, red_lat });
+            end
+            ss_read_delay <= 1;
+        end
+    end else begin
+        ss_read_delay <= 0;
     end
 end
 

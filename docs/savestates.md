@@ -1,0 +1,121 @@
+# Savestates
+
+Savestate support modeled on the Arcade-IGSPGM_MiSTer architecture: each
+hardware block exposes its state as a numbered "section" on an internal
+savestate bus (`ssbus_if`, see `rtl/savestates.sv`); `memory_stream.sv`
+gathers the sections into a chunked stream in a DDR window (4 slots x 4MB at
+`SS_DDR_BASE` = 0x3E000000, `rtl/m72_pkg.sv`), which the host then persists
+(MiSTer OSD slots on FPGA, `.m72state` files in the simulator).
+
+## How a save works (rtl/m72.v controller FSM)
+
+1. `ss_do_save` -> the controller requests a pause. In addition to the normal
+   pause conditions (bus idle, no SDRAM request in flight) a savestate pause
+   requires the V30 BIU to be bus-quiet (`SS_BUS_QUIET`) and the sprite DMA
+   idle (`TNSL`), so every RAM port the streamer hijacks is inert.
+2. After a short settle, `save_state_data` enumerates all sections (query with
+   timeout — sections that don't answer are skipped) and streams them into the
+   DDR slot.
+3. On restore the stream is scattered back; the V30's full architectural and
+   micro state is written through its 228-entry ucore SS register file
+   (`rtl/v30/v30_bus.sv` slave), the Z80 through the generated
+   `tv80_auto_ss.sv` (`auto_save_adaptor2`), and everything else through
+   per-module slaves. A short drain satisfies the V30's write-staging
+   contract, the bus adapter is reset to idle (`ss_restore_done`), and the
+   core resumes when the beam reaches the saved `paused_v/paused_h` position.
+
+## Section map
+
+See `SSIDX_*` in `rtl/m72_pkg.sv`: work RAM, V30 regfile, Z80, sound RAM +
+latches, sprite buffer/table/DMA state, both tilemap layers (VRAM + scroll
+regs), palettes, CRTC counters, interrupt controller, and a build-version
+stamp that round-trips through the file.
+
+The ucore CPU map has tag/version `0x8E` and is not compatible with states
+created by the previous FSM-based V30 implementation. Create new states after
+upgrading the core; an older CPU section raises the V30 SS error, its payload
+is discarded, and the simulator reports `load_failed`.
+
+## Simulator
+
+- `state save` / `state load` protocol methods (and the GUI state window)
+  drive the same core handshake and write `states/<game>/NNN.m72state`.
+- File layout: 8-byte slot header, then per-chunk 64-bit header
+  `{index[63:56], width[33:32], count[31:0]}` followed by the packed data
+  (each chunk starts on a fresh 64-bit word), all-FF terminator.  The layout
+  is stable and can be parsed/patched externally — handy for injecting
+  synthetic hardware state (e.g. a hand-built sprite table) during debugging.
+- Debug: `signal.read` names `ss_state_out`, `ss_pause`, `ss_paused`,
+  `ss_read`, `ss_write`, `ss_v30_quiet`, `ss_v30_err`, `ss_stream_*`.
+- Env knobs: `M72_STATE_TIMEOUT_TICKS`, `M72_STATE_PROGRESS_TICKS`,
+  `M72_STATE_SECTION_TRACE=1` (logs each section during save/restore).
+
+## Generated auto_ss cores (Z80, jt51)
+
+The Z80 (`tv80_auto_ss.sv`) and YM2151 (`jt51_auto_ss.sv`) get their savestate
+logic injected automatically by `util/state_module.py` (jotego's Verilog
+savestate generator, run under `uv`; needs `util/verible_verilog_syntax.py`
+and the `verible-verilog-*` binaries). Regenerate with:
+
+```
+uv run util/state_module.py --generate-csv docs/jt51_mapping.csv \
+    jt51 rtl/jt51_auto_ss.sv rtl/jt51/*.v
+```
+
+Both are wired to the ssbus via `auto_save_adaptor2` in `sound.sv` and are
+compiled in place of the plain cores under `USE_AUTO_SS` (see `files.qip` /
+`sim/Makefile`). The jt51 ROMs (`sinetable`, `explut`, `lfo_lut`) are
+`initial`-populated constants and are correctly excluded (the generator only
+captures registers written with `<=` in an `always` block).
+
+### Local patches that must survive a jt51 update
+
+`rtl/jt51/` is a vendored snapshot of jotego/jt51 (currently upstream `985a573`,
+2026-07-29). Two edits are carried on top and are commented as such in the files
+themselves - re-apply both after any re-import, or the generator output changes
+silently:
+
+* `jt51_sh.v` - the clocked shift moved out of the genvar `generate` to module
+  scope, so the generator injects its read/restore logic once instead of per
+  genvar bit (which produced a multidriven `auto_ss_data_out` and crippled sim
+  speed). Matches the `jt12_sh` style the generator handles.
+* `jt51_pg.v` - `keycode_III`, which is the *only* thing `jt51_eg` uses the key
+  code for (`kshift_III = keycode_III >> ~ks`), is taken from a second,
+  modulation-free `jt51_pm` instance instead of the PM-modulated one. Letting
+  the LFO's vibrato into the envelope's key scaling makes the effective rate
+  wobble; when the wobble crosses a `rate[5:2]` group boundary the EG re-slices
+  `eg_cnt` and its `sum_up = cnt_V[0] != cnt_out` edge detector fires on the
+  slice change rather than on a real envelope tick, so the envelope decays at
+  the LFO's rate instead of D1R. See `rtype_sound_commands.md`.
+* `jt51.v` - the unused ``define YM_TIMER_CTRL 8'h14` is deleted.
+  `verible-verilog-syntax` fails to parse it, and the failure is *silent*: the
+  generator skips `jt51.v` and emits a plausible-looking but incomplete file.
+  Always check the generator log for `syntax error` before trusting the output.
+
+Regenerating changes the JT51 section's entry count (88 -> 94 on the 2026-07
+update), which invalidates every previously captured `.m72state`. Sanity-check
+the flow by regenerating from unchanged sources first - it is deterministic and
+should reproduce the checked-in file byte for byte.
+
+## FPGA (Arcade-IremM72.sv)
+
+OSD: savestate slot / autoincrement options, `R[43]` save / `R[44]` restore,
+hotkeys Alt-F1 (save) and F1 (restore) via `savestate_ui`. The DDR pins are
+shared between the savestate streamer (priority, via `acquire`) and the
+screen-rotation framebuffer through `ddr_mux`.
+
+## Known gaps / scope
+
+- **Only R-Type is validated** (memory map 0, no MCU/samples). State the
+  other games need — MCU internal/external RAM, the CPU/MCU mailbox, the
+  sample player, M84 specifics — is intentionally not saved yet; other games
+  will not restore correctly.
+- **FPGA hardware untested.** The OSD wiring is in place but has not been
+  validated on a DE10-Nano yet.
+- Audio filter (IIR) state, sprite line buffers and the pause-replay scroll
+  table are transient and intentionally not saved (they regenerate within a
+  frame; the scroll replay is gated during restore).
+- Work RAM moved from SDRAM to block RAM as part of this feature (the
+  hiscore path now reads the BRAM directly); CPU RAM accesses no longer
+  stall the CE train, which slightly shifts instruction-level timing vs
+  earlier builds.

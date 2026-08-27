@@ -71,7 +71,7 @@ reg     [5:1]   rate_VI;
 // remember: { log_msb, pow_addr } <= log_val[11:0] + { tl, 5'd0 } + { eg, 2'd0 };
 
 reg     [ 1:0]  eg_cnt_base;
-reg     [14:0]  eg_cnt /*verilator public*/;
+reg     [14:0]  eg_cnt;
 
 reg     [ 9:0]  am_final_VII;
 
@@ -133,7 +133,7 @@ always @(*) begin : rate_step
         endcase
     end
     // a rate_IV of zero keeps the level still
-    step_V = rate_V[5:1]==5'd0 ? 1'b0 : step_idx[ cnt_V ];
+    step_V = rate_V[5:2]==4'd0 ? 1'b0 : step_idx[ cnt_V ];
 end
 
 
