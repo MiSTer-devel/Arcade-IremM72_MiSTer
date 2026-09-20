@@ -129,7 +129,13 @@ reg [63:0] ss_glb_data;
 // be bus-quiet (no cycle latent in the prefetch/EU pipeline) and the sprite
 // DMA idle (TNSL) so every RAM port the savestate hijacks is inert.
 wire pause_rq_any = pause_rq | ss_pause;
-wire ss_quiesced = v30_ss_quiet & TNSL;
+// `ce_cpu` is registered, so a high value here is a CPU phase that the core
+// will consume on this same rising edge.  Do not latch `paused` merely because
+// the pre-edge BIU state is quiet: that pending phase can launch a new bus
+// cycle as the pause is acquired, leaving the saved core non-quiescent.  The
+// ss_cpu_quiesce gate below makes the following phase a bubble; acquisition
+// then succeeds once both the BIU and the registered CE are idle together.
+wire ss_quiesced = v30_ss_quiet & TNSL & ~ce_cpu;
 // Once the ucore exposes a bus-quiet boundary during a savestate request,
 // stop issuing CPU phases immediately.  Otherwise its prefetcher can launch
 // another cycle before `paused` is registered, and tight code-fetch loops may
